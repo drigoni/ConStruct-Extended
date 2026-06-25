@@ -200,8 +200,8 @@ def setup_wandb(cfg):
     if dataset_name == "qm9" and not cfg.dataset.remove_h:
         dataset_name = "qm9_h"
     kwargs = {
-        "name": cfg.general.name,
-        "project": f"ConStruct_{dataset_name}",
+        "name": cfg.general.name + "-" + dataset_name,
+        "project": f"ConStruct",
         "config": config_dict,
         "settings": wandb.Settings(_disable_stats=True),
         "reinit": True,

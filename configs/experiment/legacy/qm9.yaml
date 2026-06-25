@@ -5,17 +5,17 @@ general:
     resume: null            # If resume, path to ckpt file from outputs directory in main directory
     test_only: null
     check_val_every_n_epochs: 10
-    sample_every_val: 10
-    samples_to_generate: 100
-    samples_to_save: 20
+    sample_every_val: 5
+    samples_to_generate: 256
+    samples_to_save: 50
     chains_to_save: 5
-    final_model_samples_to_generate: 200
-    final_model_samples_to_save: 50
-    final_model_chains_to_save: 10
+    final_model_samples_to_generate: 10000
+    final_model_samples_to_save: 1000
+    final_model_chains_to_save: 200
     number_chain_steps: 200
 train:
     n_epochs: 200
-    batch_size: 128
+    batch_size: 256
     save_model: True
 model:
     diffusion_steps: 500

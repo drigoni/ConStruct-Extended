@@ -58,7 +58,7 @@ class SpectreGraphDataset(InMemoryDataset):
             self.file_idx = 2
 
         super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
         self.statistics = Statistics(
             num_nodes=load_pickle(self.processed_paths[1]),
@@ -232,7 +232,7 @@ class SpectreGraphDataset(InMemoryDataset):
                 min_eigval,
                 same_sample,
                 n_max,
-            ) = torch.load(file_path)
+            ) = torch.load(file_path, weights_only=False)
 
         # Planarity checks
         # are_planar = [nx.is_planar(nx.from_numpy_array(adj.numpy())) for adj in adjs]
@@ -349,7 +349,7 @@ class SpectreGraphDataset(InMemoryDataset):
         torch.save(test_data, self.raw_paths[2])
 
     def process(self):
-        raw_dataset = torch.load(os.path.join(self.raw_dir, "{}.pt".format(self.split)))
+        raw_dataset = torch.load(os.path.join(self.raw_dir, "{}.pt".format(self.split)), weights_only=False)
         data_list = []
         for adj in raw_dataset:
             n = adj.shape[-1]

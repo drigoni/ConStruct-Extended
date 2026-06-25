@@ -101,7 +101,7 @@ class RemoveYTransform:
         return data
 
 
-def compute_reference_metrics(dataset_infos, datamodule):
+def compute_reference_metrics(dataset_infos, datamodule, cfg=None):
     ref_metrics_path = os.path.join(
         datamodule.train_dataloader().dataset.processed_dir, f"ref_metrics.pkl"
     )
@@ -127,6 +127,7 @@ def compute_reference_metrics(dataset_infos, datamodule):
             test=False,
             train_loader=datamodule.train_dataloader(),
             val_loader=datamodule.val_dataloader(),
+            cfg=cfg,
         )
         val_reference_metrics = val_sampling_metrics.domain_metrics.forward(
             training_graphs, current_epoch=None, local_rank=0, computed_metrics=None
@@ -137,6 +138,7 @@ def compute_reference_metrics(dataset_infos, datamodule):
             test=False,
             train_loader=datamodule.train_dataloader(),
             val_loader=datamodule.test_dataloader(),  # datamodule.test_dataloader(),
+            cfg=cfg,
         )
         test_reference_metrics = test_sampling_metrics.domain_metrics.forward(
             training_graphs, current_epoch=None, local_rank=0, computed_metrics=None

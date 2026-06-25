@@ -1,3 +1,12 @@
+ConStruct/slurm_jobs/*
+ConStruct/wandb/*
+ConStruct/logs
+ConStruct/graphs/
+ConStruct/violation_summary*
+data/
+wandb/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

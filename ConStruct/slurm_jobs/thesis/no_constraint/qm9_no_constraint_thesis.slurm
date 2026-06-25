@@ -1,19 +1,54 @@
 #!/bin/bash
 #SBATCH --job-name=qm9_no_constraint_thesis
-#SBATCH --output=/home/rislek/ConStruct-Thesis/ConStruct/logs/thesis/qm9_no_constraint_thesis_%j.out
+#SBATCH --output=/home/drigoni/repository/ConStruct-Thesis/ConStruct/logs/thesis/qm9_no_constraint_thesis_%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=40G
+#SBATCH --mem=31G
 #SBATCH --gres=gpu:1
 #SBATCH --exclude=vgpu5-0
-#SBATCH --constraint=A6000|A5000
-#SBATCH --time=48:00:00
-#SBATCH --partition=testing
+#SBATCH --constraint=A6000|A5000|A100|V100|RTX2000
+#SBATCH --time=0-23:00:00
+#SBATCH --partition=testing,allgroups,debug
+
+
+
+### ============ VARIABLES SETTING
+export SLURM_MASTER_PORT=$(expr 10000 + $(echo -n ${SLURM_JOBID} | tail -c 4))
+export SLURM_MASTER_NODE="$(scontrol show hostnames ${SLURM_JOB_NODELIST} | head -n 1)" # such as gn11
+# multiprocessing variables
+export MASTER_ADDR=${SLURM_MASTER_NODE}
+export MASTER_PORT=${SLURM_MASTER_PORT}
+export NODE_RANK=${SLURM_PROCID}
+export WORLD_SIZE=$(($SLURM_NTASKS_PER_NODE * $SLURM_JOB_NUM_NODES))
+
+
+### ============ SOME PRINT COMMANDS
+echo ''
+echo ''
+echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX "
+echo 'Date: ' $(date)
+echo 'Directory: ' $(pwd)
+echo "--------------------------------------------- "
+echo "Number of nodes: " ${SLURM_JOB_NUM_NODES}
+echo "Ntasks per node: "  ${SLURM_NTASKS_PER_NODE}
+echo "NGPUs per node: "  ${SLURM_GPUS_PER_NODE}
+echo "Nodelist: " ${SLURM_JOB_NODELIST}  
+echo "--------------------------------------------- "        
+echo "SLURM_MASTER_PORT: " ${SLURM_MASTER_PORT}
+echo "SLURM_MASTER_NODE: " ${SLURM_MASTER_NODE}
+echo "--------------------------------------------- "
+srun bash -c 'echo "SLURM_PROCID: " ${SLURM_PROCID}'    # note the need to use srun and bash to print the right value
+srun echo "TORCH_DEVICE_COUNT: " $(python -c 'import torch; print(torch.cuda.device_count())')
+srun nvidia-smi
+echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX "
+echo ''
+echo ''
+
 
 # Load environment
-cd /home/rislek/ConStruct-Thesis
-source /conf/shared-software/anaconda/etc/profile.d/conda.sh
-conda activate construct-env
+cd /home/drigoni/repository/ConStruct-Thesis
+#source /conf/shared-software/anaconda/etc/profile.d/conda.sh
+#conda activate construct-env
 
 export LD_PRELOAD="$CONDA_PREFIX/lib/libgomp.so.1"
 
@@ -33,11 +68,6 @@ export PYTORCH_CUDNN_BENCHMARK=1
 # Force unbuffered output for better logging
 export PYTHONUNBUFFERED=1
 
-# Set CUDA device
-export CUDA_VISIBLE_DEVICES=0
-
-# CUDA verification
-python -c 'import torch; print("torch version:", torch.__version__); print("CUDA available:", torch.cuda.is_available()); print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None")'
 
 echo "=== Running Experiment: qm9_no_constraint_thesis ==="
 echo "Config: thesis/no_constraint/qm9_thesis_no_constraint"

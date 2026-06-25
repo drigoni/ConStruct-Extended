@@ -56,7 +56,7 @@ class MosesDataset(InMemoryDataset):
             self.file_idx = 2
 
         super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
         self.statistics = Statistics(
             num_nodes=load_pickle(self.processed_paths[1]),
@@ -272,4 +272,4 @@ class MosesInfos(AbstractDatasetInfos):
             datamodule.test_dataset.mu_fcd,
             datamodule.test_dataset.sigma_fcd,
         )
-        compute_reference_metrics(self, datamodule)
+        compute_reference_metrics(self, datamodule, cfg)

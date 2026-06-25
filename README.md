@@ -38,18 +38,11 @@ This repository is a **fork and extension** of the original [ConStruct](https://
 ### 1. **Create and Activate Your Conda Environment**
 
 ```bash
-conda create -y -c conda-forge -n construct python=3.9 rdkit=2023.03.2
+conda create -y -c conda-forge -n construct python=3.10
 conda activate construct
 ```
 
-### 2. **Check RDKit Works**
-
-```bash
-python -c "from rdkit import Chem"
-# No error means it's fine.
-```
-
-### 3. **Install graph-tool (optional)**
+### 2. **Install graph-tool (optional)**
 
 ```bash
 conda install -c conda-forge graph-tool=2.45
@@ -59,37 +52,40 @@ python -c "import graph_tool as gt"
 * *graph-tool* is **only required for non-molecular datasets** (e.g., tree, planar, lobster).
 * If you work only with molecular datasets (QM9, etc.), you can skip installing graph-tool to avoid compatibility headaches.
 
-### 4. **Install PyTorch (CUDA 11.8), then torch-geometric**
+### 3. **Install PyTorch (CUDA 11.8), then torch-geometric**
 
 ```bash
-pip install torch==2.0.1 --index-url https://download.pytorch.org/whl/cu118
-pip install torch-geometric==2.3.1
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+pip install torch_geometric rdkit fcd tabulate seaborn
+# Optional dependencies:
+# pip install pyg_lib torch_scatter torch_sparse -f https://data.pyg.org/whl/torch-2.12.0+cu126.html
 python -c "import torch; print(torch.cuda.is_available())"
 # Should print True if GPU is visible.
 ```
 
-### 5. **Install fcd (Fréchet ChemNet Distance, CODE ONLY -> don't pip install fcd !!!)**
+
+
+### 4. **Check RDKit Works**
 
 ```bash
-pip install --no-deps fcd
-# Do NOT install dependencies here, or you WILL break torch/rdkit versions!
-# This gives you fcd.load_ref_model, fcd.get_fcd, etc.
+python -c "from rdkit import Chem"
+# No error means it's fine.
 ```
 
-### 6. **Install the Rest of Your Requirements**
+### 5. **Install the Rest of Your Requirements**
 
 ```bash
 pip install -r requirements.txt
 # (If requirements.txt has torch or rdkit, double check they don't get downgraded!)
 ```
 
-### 7. **Install Your Own Package (Editable Dev Mode, If Needed)**
+### 6. **Install Your Own Package (Editable Dev Mode, If Needed)**
 
 ```bash
 pip install -e .
 ```
 
-### 8. **Compile ORCA if Needed**
+### 7. **Compile ORCA if Needed**
 
 ```bash
 cd ./ConStruct/analysis/orca

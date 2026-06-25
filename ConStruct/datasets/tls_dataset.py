@@ -60,7 +60,7 @@ class TLSGraphDataset(InMemoryDataset):
             self.file_idx = 2
 
         super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
         self.statistics = Statistics(
             num_nodes=load_pickle(self.processed_paths[1]),

@@ -85,7 +85,7 @@ class QM9Dataset(InMemoryDataset):
             self.atom_decoder = [key for key in atom_encoder.keys()]
 
         super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
         self.statistics = Statistics(
             num_nodes=load_pickle(self.processed_paths[1]),
@@ -370,4 +370,4 @@ class QM9Infos(AbstractDatasetInfos):
             datamodule.test_dataset.sigma_fcd,
         )
 
-        compute_reference_metrics(self, datamodule)
+        compute_reference_metrics(self, datamodule, cfg)

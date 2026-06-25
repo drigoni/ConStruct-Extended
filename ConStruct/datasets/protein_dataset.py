@@ -54,7 +54,7 @@ class ProteinDataset(InMemoryDataset):
             self.file_idx = 2
 
         super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
         self.statistics = Statistics(
             num_nodes=load_pickle(self.processed_paths[1]),
@@ -155,7 +155,7 @@ class ProteinDataset(InMemoryDataset):
 
     def process(self):
         indices = torch.load(
-            os.path.join(self.raw_dir, "{}_indices.pt".format(self.split))
+            os.path.join(self.raw_dir, "{}_indices.pt".format(self.split)), weights_only=False
         )
         data_adj = (
             torch.Tensor(
