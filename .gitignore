@@ -3,6 +3,7 @@ ConStruct/wandb/*
 ConStruct/logs
 ConStruct/graphs/
 ConStruct/violation_summary*
+ConStruct/checkpoints/*
 data/
 wandb/
 

@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 import torch.nn.functional as F
 import ConStruct.utils as utils
@@ -83,6 +85,7 @@ class EigenFeatures:
     def __init__(self, num_eigenvectors, num_eigenvalues):
         self.num_eigenvectors = num_eigenvectors
         self.num_eigenvalues = num_eigenvalues
+        self._warned_numerical_fallback = False
 
     def compute_features(self, noisy_data):
         E_t = noisy_data.E
@@ -93,7 +96,7 @@ class EigenFeatures:
         mask_diag = mask_diag * (~mask.unsqueeze(1)) * (~mask.unsqueeze(2))
         L = L * mask.unsqueeze(1) * mask.unsqueeze(2) + mask_diag
 
-        eigvals, eigvectors = torch.linalg.eigh(L)
+        eigvals, eigvectors = self.compute_eigendecomposition(L)
         eigvals = eigvals.type_as(A) / torch.sum(mask, dim=1, keepdim=True)
         eigvectors = eigvectors * mask.unsqueeze(2) * mask.unsqueeze(1)
         # Retrieve eigenvalues features
@@ -110,6 +113,64 @@ class EigenFeatures:
 
         evalue_feat = torch.hstack((n_connected_comp, batch_eigenvalues))
         return evalue_feat, evector_feat
+
+    def compute_eigendecomposition(self, laplacian):
+        laplacian = (laplacian + laplacian.transpose(1, 2)) / 2
+
+        try:
+            return torch.linalg.eigh(laplacian)
+        except RuntimeError as original_error:
+            return self._fallback_eigendecomposition(laplacian, original_error)
+
+    def _fallback_eigendecomposition(self, laplacian, original_error):
+        original_device = laplacian.device
+        original_dtype = laplacian.dtype
+        cpu_laplacian = laplacian.to(device="cpu", dtype=torch.float64)
+
+        try:
+            eigvals, eigvectors = torch.linalg.eigh(cpu_laplacian)
+        except RuntimeError:
+            eigvals, eigvectors = self._fallback_eigendecomposition_per_graph(
+                cpu_laplacian
+            )
+
+        if not self._warned_numerical_fallback:
+            warnings.warn(
+                "Falling back to CPU/float64 eigendecomposition for eigenfeatures "
+                "after torch.linalg.eigh failed on the current device."
+            )
+            self._warned_numerical_fallback = True
+
+        return (
+            eigvals.to(device=original_device, dtype=original_dtype),
+            eigvectors.to(device=original_device, dtype=original_dtype),
+        )
+
+    def _fallback_eigendecomposition_per_graph(self, laplacian):
+        eigvals = []
+        eigvectors = []
+        identity = torch.eye(laplacian.size(-1), dtype=laplacian.dtype, device=laplacian.device)
+
+        for batch_idx, matrix in enumerate(laplacian):
+            matrix = (matrix + matrix.transpose(0, 1)) / 2
+            last_error = None
+
+            for jitter in (0.0, 1e-8, 1e-6, 1e-4):
+                try:
+                    stabilized = matrix if jitter == 0.0 else matrix + jitter * identity
+                    current_eigvals, current_eigvectors = torch.linalg.eigh(stabilized)
+                    eigvals.append(current_eigvals)
+                    eigvectors.append(current_eigvectors)
+                    break
+                except RuntimeError as error:
+                    last_error = error
+            else:
+                raise RuntimeError(
+                    "Eigenfeature fallback failed for batch element "
+                    f"{batch_idx} during CPU eigendecomposition."
+                ) from last_error
+
+        return torch.stack(eigvals, dim=0), torch.stack(eigvectors, dim=0)
 
     def compute_laplacian(self, adjacency, normalize: bool):
         """
