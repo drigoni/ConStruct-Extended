@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=qm9_debug_planar
-#SBATCH --output=/home/rislek/ConStruct-Thesis/ConStruct/logs/debug/qm9_debug_planar_%j.out
+#SBATCH --output=/home/drigoni/repository//repository//repository//repository/ConStruct-Thesis/ConStruct/logs/debug/qm9_debug_planar_%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G  
@@ -10,7 +10,7 @@
 #SBATCH --partition=allgroups,testing
 
 # Load environment
-cd /home/rislek/ConStruct-Thesis
+cd /home/drigoni/repository//repository//repository//repository/ConStruct-Thesis
 source /conf/shared-software/anaconda/etc/profile.d/conda.sh
 conda activate construct-env
 
@@ -32,17 +32,17 @@ python -c 'import torch; print("torch version:", torch.__version__); print("CUDA
 
 echo "=== Running QM9 Debug Planarity Experiment ==="
 echo "Config: debug/edge_deletion/planarity/qm9_debug_planar"
-echo "Dataset: /home/rislek/ConStruct-Thesis/data/qm9"
+echo "Dataset: /home/drigoni/repository//repository//repository//repository/ConStruct-Thesis/data/qm9"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
 echo "Time: $(date)"
 
 # Verify QM9 dataset exists
 echo "=== Checking QM9 dataset ==="
-if [ -d "/home/rislek/ConStruct-Thesis/data/qm9" ]; then
-    echo "✅ QM9 dataset found at /home/rislek/ConStruct-Thesis/data/qm9"
+if [ -d "/home/drigoni/repository//repository//repository//repository/ConStruct-Thesis/data/qm9" ]; then
+    echo "✅ QM9 dataset found at /home/drigoni/repository//repository//repository//repository/ConStruct-Thesis/data/qm9"
 else
-    echo "❌ QM9 dataset not found at /home/rislek/ConStruct-Thesis/data/qm9"
+    echo "❌ QM9 dataset not found at /home/drigoni/repository//repository//repository//repository/ConStruct-Thesis/data/qm9"
     exit 1
 fi
 
@@ -51,9 +51,9 @@ echo "This will test planarity constraint enforcement on QM9"
 
 # Run the experiment
 cd ConStruct
-python main.py +experiment=debug/edge_deletion/planarity/qm9_debug_planar dataset.datadir=/home/rislek/ConStruct-Thesis/data/qm9
+python main.py +experiment=debug/edge_deletion/planarity/qm9_debug_planar dataset.datadir=/home/drigoni/repository//repository//repository//repository/ConStruct-Thesis/data/qm9
 
 echo "=== Experiment completed ==="
 echo "Check the log files for results:"
-echo "- SLURM output: /home/rislek/ConStruct-Thesis/ConStruct/logs/qm9_debug_planar_$SLURM_JOB_ID.out"
+echo "- SLURM output: /home/drigoni/repository//repository//repository//repository/ConStruct-Thesis/ConStruct/logs/qm9_debug_planar_$SLURM_JOB_ID.out"
 echo "Time: $(date)" 

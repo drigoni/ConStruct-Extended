@@ -29,7 +29,7 @@ from pathlib import Path
 import time
 
 # Add ConStruct to path
-sys.path.append('/home/rislek/ConStruct-Thesis')
+sys.path.append('/home/drigoni/repository/ConStruct-Thesis')
 
 from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique
 
@@ -58,7 +58,7 @@ def load_guacamol_dataset(split="train"):
         # Load specified split
         dataset = GuacamolDataset(
             split=split,
-            root="/home/rislek/ConStruct-Thesis/data/guacamol",
+            root="/home/drigoni/repository/ConStruct-Thesis/data/guacamol",
             filter_dataset=True,
             transform=None,
             pre_transform=None,
@@ -83,7 +83,7 @@ def load_full_guacamol_datasets():
         for split in ["train", "val", "test"]:
             dataset = GuacamolDataset(
                 split=split,
-                root="/home/rislek/ConStruct-Thesis/data/guacamol",
+                root="/home/drigoni/repository/ConStruct-Thesis/data/guacamol",
                 filter_dataset=True,
                 transform=None,
                 pre_transform=None,
@@ -515,7 +515,7 @@ guacamol_analysis/
 To run the complete analysis:
 
 ```bash
-cd /home/rislek/ConStruct-Thesis/ConStruct/datasets/guacamol_analysis/
+cd /home/drigoni/repository/ConStruct-Thesis/ConStruct/datasets/guacamol_analysis/
 python complete_guacamol_analysis.py
 ```
 

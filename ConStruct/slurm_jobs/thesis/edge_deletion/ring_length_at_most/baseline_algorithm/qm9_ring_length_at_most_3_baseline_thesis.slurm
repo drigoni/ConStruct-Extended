@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=qm9_ring_length_at_most_3_thesis_baseline
-#SBATCH --output=/home/rislek/ConStruct-Thesis/ConStruct/logs/qm9_ring_length_at_most_3_thesis_baseline_%j.out
+#SBATCH --output=/home/drigoni/repository/ConStruct-Thesis/ConStruct/logs/qm9_ring_length_at_most_3_thesis_baseline_%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=20G
@@ -11,7 +11,7 @@
 #SBATCH --partition=allgroups,testing
 
 # Load environment
-cd /home/rislek/ConStruct-Thesis
+cd /home/drigoni/repository/ConStruct-Thesis
 
 # Only activate conda if not already in the right environment
 if [ "$CONDA_DEFAULT_ENV" != "construct-env" ]; then

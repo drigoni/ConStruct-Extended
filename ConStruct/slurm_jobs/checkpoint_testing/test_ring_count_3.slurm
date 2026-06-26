@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=test_ring_count_3
-#SBATCH --output=/home/rislek/ConStruct-Thesis/ConStruct/logs/checkpoint_testing/test_ring_count_3_%j.out
+#SBATCH --output=/home/drigoni/repository/ConStruct-Thesis/ConStruct/logs/checkpoint_testing/test_ring_count_3_%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G  
@@ -11,7 +11,7 @@
 #SBATCH --partition=allgroups,testing
 
 # Load environment
-cd /home/rislek/ConStruct-Thesis
+cd /home/drigoni/repository/ConStruct-Thesis
 source /conf/shared-software/anaconda/etc/profile.d/conda.sh
 conda activate construct-env
 

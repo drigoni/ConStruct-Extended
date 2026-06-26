@@ -31,7 +31,7 @@ from pathlib import Path
 import time
 
 # Add ConStruct to path
-sys.path.append('/home/rislek/ConStruct-Thesis')
+sys.path.append('/home/drigoni/repository/ConStruct-Thesis')
 
 from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique
 
@@ -62,7 +62,7 @@ def load_qm9_dataset(split="train"):
         # Load specified split
         dataset = QM9Dataset(
             split=split,
-            root="/home/rislek/ConStruct-Thesis/data/qm9",
+            root="/home/drigoni/repository/ConStruct-Thesis/data/qm9",
             remove_h=True,
             target_prop=None,
             transform=None,
@@ -88,7 +88,7 @@ def load_full_qm9_datasets():
         for split in ["train", "val", "test"]:
             dataset = QM9Dataset(
                 split=split,
-                root="/home/rislek/ConStruct-Thesis/data/qm9",
+                root="/home/drigoni/repository/ConStruct-Thesis/data/qm9",
                 remove_h=True,
                 target_prop=None,
                 transform=None,

@@ -29,7 +29,7 @@ from pathlib import Path
 import time
 
 # Add ConStruct to path
-sys.path.append('/home/rislek/ConStruct-Thesis')
+sys.path.append('/home/drigoni/repository/ConStruct-Thesis')
 
 from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique
 
@@ -60,7 +60,7 @@ def load_moses_dataset(split="train"):
         # Load specified split
         dataset = MosesDataset(
             split=split,
-            root="/home/rislek/ConStruct-Thesis/data/moses",
+            root="/home/drigoni/repository/ConStruct-Thesis/data/moses",
             transform=None,
             pre_transform=None,
             pre_filter=None,
@@ -84,7 +84,7 @@ def load_full_moses_datasets():
         for split in ["train", "val", "test"]:
             dataset = MosesDataset(
                 split=split,
-                root="/home/rislek/ConStruct-Thesis/data/moses",
+                root="/home/drigoni/repository/ConStruct-Thesis/data/moses",
                 transform=None,
                 pre_transform=None,
                 pre_filter=None,
@@ -533,7 +533,7 @@ moses_analysis/
 To run the complete analysis:
 
 ```bash
-cd /home/rislek/ConStruct-Thesis/ConStruct/datasets/moses_analysis/
+cd /home/drigoni/repository/ConStruct-Thesis/ConStruct/datasets/moses_analysis/
 python complete_moses_analysis.py
 ```
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=run_all_tests
-#SBATCH --output=/home/rislek/ConStruct-Thesis/ConStruct/logs/checkpoint_testing/run_all_tests_%j.out
+#SBATCH --output=/home/drigoni/repository/ConStruct-Thesis/ConStruct/logs/checkpoint_testing/run_all_tests_%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
@@ -11,7 +11,7 @@
 # Master script to submit all constraint testing jobs
 # This script submits jobs sequentially to avoid overwhelming the cluster
 
-cd /home/rislek/ConStruct-Thesis
+cd /home/drigoni/repository/ConStruct-Thesis
 
 echo "=== Starting All Constraint Tests ==="
 echo "Time: $(date)"

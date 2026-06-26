@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=qm9_ring_count_at_most_0_debug_baseline
-#SBATCH --output=/home/rislek/ConStruct-Thesis/ConStruct/logs/qm9_ring_count_at_most_0_debug_baseline_%j.out
+#SBATCH --output=/home/drigoni/repository//repository//repository//repository/ConStruct-Thesis/ConStruct/logs/qm9_ring_count_at_most_0_debug_baseline_%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G  
@@ -10,7 +10,7 @@
 #SBATCH --partition=debug
 
 # Load environment
-cd /home/rislek/ConStruct-Thesis
+cd /home/drigoni/repository//repository//repository//repository/ConStruct-Thesis
 source /conf/shared-software/anaconda/etc/profile.d/conda.sh
 conda activate construct-env
 

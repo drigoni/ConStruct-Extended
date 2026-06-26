@@ -11,7 +11,7 @@
 #SBATCH --partition=allgroups,testing
 
 # Load environment
-cd /home/rislek/ConStruct-Thesis
+cd /home/drigoni/repository/ConStruct-Thesis
 source /conf/shared-software/anaconda/etc/profile.d/conda.sh
 conda activate construct-env
 
