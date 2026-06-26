@@ -1,0 +1,52 @@
+#!/bin/bash
+#SBATCH --job-name=qm9_ring_count_at_most_5_thesis_baseline
+#SBATCH --output=/home/drigoni/repository/ConStruct-Thesis/slurm_jobs/logs/qm9_ring_count_at_most_5_thesis_baseline_%j.out
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=20G
+#SBATCH --gres=gpu:1
+#SBATCH --exclude=vgpu5-0
+#SBATCH --constraint=A6000|A5000
+#SBATCH --time=48:00:00
+#SBATCH --partition=allgroups,testing
+
+# Load environment
+cd /home/drigoni/repository/ConStruct-Thesis
+source /conf/shared-software/anaconda/etc/profile.d/conda.sh
+conda activate construct-env
+
+export LD_PRELOAD="$CONDA_PREFIX/lib/libgomp.so.1"
+
+# WandB fixes to prevent hanging
+export WANDB_TIMEOUT=300  # 5-minute timeout for WandB operations
+export WANDB_START_METHOD=thread  # Use thread-based WandB
+export WANDB_CONSOLE=wrap  # Better console output
+export WANDB_SILENT=false  # Show WandB progress
+export WANDB_NETWORK_TIMEOUT=300
+export WANDB_HTTP_TIMEOUT=300
+
+# CUDA optimizations
+export OMP_NUM_THREADS=4
+export MKL_NUM_THREADS=4
+export PYTORCH_CUDNN_BENCHMARK=1
+
+# Force unbuffered output for better logging
+export PYTHONUNBUFFERED=1
+
+# Set CUDA device
+export CUDA_VISIBLE_DEVICES=0
+
+# CUDA verification
+python -c 'import torch; print("torch version:", torch.__version__); print("CUDA available:", torch.cuda.is_available()); print("CUDA device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "None")'
+
+echo "=== Running Experiment: ring_count_at_most_5_thesis ==="
+echo "Config: thesis/edge_deletion/ring_count_at_most/qm9_thesis_ring_count_at_most_5"
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node: $SLURM_NODELIST"
+echo "Time: $(date)"
+
+# Run the experiment
+cd ConStruct
+python main.py +experiment=thesis/edge_deletion/ring_count_at_most/qm9_thesis_ring_count_at_most_5 model.use_incremental=False
+
+echo "Experiment completed at $(date)"
