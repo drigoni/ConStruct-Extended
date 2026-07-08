@@ -59,7 +59,7 @@ export PYTHONUNBUFFERED=1
 export CUDA_VISIBLE_DEVICES=0
 
 echo "=== Testing No Constraint (Baseline) ==="
-echo "Using No-Constraint Checkpoint: checkpoints/qm9_thesis_no_constraint/epoch-94.ckpt"
+echo "Using No-Constraint Checkpoint: checkpoints/qm9_thesis_no_constraint/last-v1.ckpt"
 echo "Constraint: No structural constraints (natural QM9 distribution)"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
@@ -69,9 +69,9 @@ echo "Time: $(date)"
 cd ConStruct
 python main.py \
     +experiment=thesis/no_constraint/qm9_thesis_no_constraint \
-    general.test_only=checkpoints/qm9_thesis_no_constraint/epoch-94.ckpt \
+    general.test_only=checkpoints/qm9_thesis_no_constraint/last-v1.ckpt \
     general.name=test_no_constraint \
-    general.final_model_samples_to_generate=10000 \
+    general.final_model_samples_to_generate=50000 \
     general.wandb=disabled \
     general.final_model_chains_to_save=0
 

@@ -2,14 +2,45 @@
 #SBATCH --job-name=run_all_tests
 #SBATCH --output=/home/drigoni/repository/ConStruct-Thesis/slurm_jobs/logs/checkpoint_testing/run_all_tests_%j.out
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=4G
-#SBATCH --time=24:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G  
+#SBATCH --gres=gpu:1
+#SBATCH --exclude=vgpu5-0
+#SBATCH --time=0-23:00:00
 #SBATCH --constraint=A6000|A5000
-#SBATCH --partition=allgroups,testing
+#SBATCH --partition=allgroups,testing,debug
 
-# Master script to submit all constraint testing jobs
-# This script submits jobs sequentially to avoid overwhelming the cluster
+### ============ VARIABLES SETTING
+export SLURM_MASTER_PORT=$(expr 10000 + $(echo -n ${SLURM_JOBID} | tail -c 4))
+export SLURM_MASTER_NODE="$(scontrol show hostnames ${SLURM_JOB_NODELIST} | head -n 1)" # such as gn11
+# multiprocessing variables
+export MASTER_ADDR=${SLURM_MASTER_NODE}
+export MASTER_PORT=${SLURM_MASTER_PORT}
+export NODE_RANK=${SLURM_PROCID}
+export WORLD_SIZE=$(($SLURM_NTASKS_PER_NODE * $SLURM_JOB_NUM_NODES))
+
+
+### ============ SOME PRINT COMMANDS
+echo ''
+echo ''
+echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX "
+echo 'Date: ' $(date)
+echo 'Directory: ' $(pwd)
+echo "--------------------------------------------- "
+echo "Number of nodes: " ${SLURM_JOB_NUM_NODES}
+echo "Ntasks per node: "  ${SLURM_NTASKS_PER_NODE}
+echo "NGPUs per node: "  ${SLURM_GPUS_PER_NODE}
+echo "Nodelist: " ${SLURM_JOB_NODELIST}  
+echo "--------------------------------------------- "        
+echo "SLURM_MASTER_PORT: " ${SLURM_MASTER_PORT}
+echo "SLURM_MASTER_NODE: " ${SLURM_MASTER_NODE}
+echo "--------------------------------------------- "
+srun bash -c 'echo "SLURM_PROCID: " ${SLURM_PROCID}'    # note the need to use srun and bash to print the right value
+srun echo "TORCH_DEVICE_COUNT: " $(python -c 'import torch; print(torch.cuda.device_count())')
+srun nvidia-smi
+echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX "
+echo ''
+echo ''
 
 cd /home/drigoni/repository/ConStruct-Thesis
 
