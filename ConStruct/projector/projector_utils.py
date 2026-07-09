@@ -14,9 +14,8 @@ from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique, cou
 from ConStruct.projector.is_planar import is_planar
 from ConStruct.projector.is_ring.is_ring_count_at_most.is_ring_count_at_most import ring_count_at_most_projector
 from ConStruct.projector.is_ring.is_ring_length_at_most.is_ring_length_at_most import has_rings_of_length_at_most
-# TODO: FUTURE WORK - Imports for edge-insertion projectors removed for simplification
-# from ConStruct.projector.is_ring.is_ring_count_at_least.is_ring_count_at_least import ring_count_at_least_projector
-# from ConStruct.projector.is_ring.is_ring_length_at_least.is_ring_length_at_least import ring_length_at_least_projector
+from ConStruct.projector.is_ring.is_ring_count_at_least.is_ring_count_at_least import has_at_least_n_rings
+from ConStruct.projector.is_ring.is_ring_length_at_least.is_ring_length_at_least import has_rings_of_length_at_least
 from ConStruct.utils import PlaceHolder
 from ConStruct.diffusion.extra_features import ExtraFeatures
 from ConStruct.diffusion.extra_features_molecular import ExtraMolecularFeatures
@@ -302,6 +301,10 @@ class AbstractProjector(abc.ABC):
     def can_block_edges(self):
         pass
 
+    @property
+    def edge_mutation(self):
+        return "add"
+
     def __init__(self, z_t: PlaceHolder):
         self.batch_size = z_t.X.shape[0]
         self.nx_graphs_list = []
@@ -314,6 +317,7 @@ class AbstractProjector(abc.ABC):
 
         # initialize adjacency matrix and check no edges
         self.z_t_adj = get_adj_matrix(z_t)
+        self.z_t_E = z_t.E.clone()
 
         # add data structure where planarity is checked
         for graph_idx in range(self.batch_size):
@@ -327,72 +331,74 @@ class AbstractProjector(abc.ABC):
             self.nx_graphs_list.append(nx_graph)
 
     def project(self, z_s: PlaceHolder):
-        # find added edges
         z_s_adj = get_adj_matrix(z_s)
-        diff_adj = z_s_adj - self.z_t_adj
-        assert (diff_adj >= 0).all()  # No edges can be removed in the reverse
-        
-        # Process each graph in the batch
-        new_edges = diff_adj.nonzero(as_tuple=False)
+
+        if self.edge_mutation == "add":
+            diff_adj = z_s_adj - self.z_t_adj
+            assert (diff_adj >= 0).all()
+            candidate_edges = diff_adj.nonzero(as_tuple=False)
+        elif self.edge_mutation == "remove":
+            diff_adj = self.z_t_adj - z_s_adj
+            assert (diff_adj >= 0).all()
+            candidate_edges = diff_adj.nonzero(as_tuple=False)
+        else:
+            raise ValueError(f"Unknown edge mutation mode: {self.edge_mutation}")
+
         for graph_idx, nx_graph in enumerate(self.nx_graphs_list):
-            edges_to_add = (
-                new_edges[
+            edges_to_process = (
+                candidate_edges[
                     torch.logical_and(
-                        new_edges[:, 0] == graph_idx,  # Select edges of the graph
-                        new_edges[:, 1] < new_edges[:, 2],  # undirected graph
+                        candidate_edges[:, 0] == graph_idx,
+                        candidate_edges[:, 1] < candidate_edges[:, 2],
                     )
                 ][:, 1:]
             )
-            # FIX: Ensure proper GPU tensor handling
-            if edges_to_add.is_cuda:
-                edges_to_add = edges_to_add.cpu()
-            edges_to_add = edges_to_add.numpy()
+            if edges_to_process.is_cuda:
+                edges_to_process = edges_to_process.cpu()
+            edges_to_process = edges_to_process.numpy()
 
-            # Process each edge with exact tentative add → validate → keep or revert+block
-            for edge in edges_to_add:
+            for edge in edges_to_process:
                 u, v = int(edge[0]), int(edge[1])
-                e = tuple(sorted((u, v)))  # canonical undirected edge tuple
-                
-                # Check if already permanently blocked
+                e = tuple(sorted((u, v)))
+                prev_edge_features = self.z_t_E[graph_idx, u, v].clone()
+                no_edge_features = torch.zeros_like(prev_edge_features)
+                no_edge_features[0] = 1
+
                 if self.can_block_edges and e in self.blocked_edges[graph_idx]:
-                    # deleting edge from edges tensor (changes z_s in place)
-                    z_s.E[graph_idx, u, v] = F.one_hot(
-                        torch.tensor(0), num_classes=z_s.E.shape[-1]
-                    )
-                    z_s.E[graph_idx, v, u] = F.one_hot(
-                        torch.tensor(0), num_classes=z_s.E.shape[-1]
-                    )
+                    if self.edge_mutation == "add":
+                        z_s.E[graph_idx, u, v] = no_edge_features
+                        z_s.E[graph_idx, v, u] = no_edge_features
+                    else:
+                        z_s.E[graph_idx, u, v] = prev_edge_features
+                        z_s.E[graph_idx, v, u] = prev_edge_features
                     self.total_blocked += 1
                     continue
-                
-                # Tentatively add edge
-                nx_graph.add_edge(u, v)
-                
-                # Exact validate using the projector's validator
+
+                if self.edge_mutation == "add":
+                    nx_graph.add_edge(u, v)
+                else:
+                    nx_graph.remove_edge(u, v)
+
                 if self.valid_graph_fn(nx_graph):
-                    # Accept - keep the edge
                     pass
                 else:
-                    # Revert and permanently block this undirected edge
-                    nx_graph.remove_edge(u, v)
-                    
-                    # deleting edge from edges tensor (changes z_s in place)
-                    z_s.E[graph_idx, u, v] = F.one_hot(
-                        torch.tensor(0), num_classes=z_s.E.shape[-1]
-                    )
-                    z_s.E[graph_idx, v, u] = F.one_hot(
-                        torch.tensor(0), num_classes=z_s.E.shape[-1]
-                    )
-                    
-                    # Permanently block this canonical edge
+                    if self.edge_mutation == "add":
+                        nx_graph.remove_edge(u, v)
+                        z_s.E[graph_idx, u, v] = no_edge_features
+                        z_s.E[graph_idx, v, u] = no_edge_features
+                    else:
+                        nx_graph.add_edge(u, v)
+                        z_s.E[graph_idx, u, v] = prev_edge_features
+                        z_s.E[graph_idx, v, u] = prev_edge_features
+
                     if self.can_block_edges:
                         self.blocked_edges[graph_idx].add(e)
                     self.total_blocked += 1
-            
-            self.nx_graphs_list[graph_idx] = nx_graph  # save new graph
 
-        # store modified z_s
+            self.nx_graphs_list[graph_idx] = nx_graph
+
         self.z_t_adj = get_adj_matrix(z_s)
+        self.z_t_E = z_s.E.clone()
 
 
 def has_no_cycles(nx_graph):
@@ -564,29 +570,23 @@ class RingCountAtLeastProjector(AbstractProjector):
     - Config: rev_proj: 'ring_count_at_least', min_rings: N
     - Post-generation: Run RDKit validation to measure chemical properties
     
-    TODO: FUTURE WORK - Implementation removed for simplification
-    This projector class is kept as a placeholder for future edge-insertion constraint work.
-    Current focus is on edge-deletion constraints (at most) which are production-ready.
     """
-    
+
     def __init__(self, z_t: PlaceHolder, min_rings: int, atom_decoder=None):
         self.min_rings = min_rings
         self.atom_decoder = atom_decoder
         super().__init__(z_t)
-        raise NotImplementedError("RingCountAtLeastProjector is marked for future work. Use RingCountAtMostProjector for production workloads.")
 
     def valid_graph_fn(self, nx_graph):
-        """
-        Check if graph satisfies structural constraint: at least N rings.
-        
-        TODO: FUTURE WORK - Implementation removed for simplification
-        """
-        raise NotImplementedError("RingCountAtLeastProjector is marked for future work. Use RingCountAtMostProjector for production workloads.")
+        return has_at_least_n_rings(nx_graph, self.min_rings)
 
     @property
     def can_block_edges(self):
-        """Can block edge removals that would violate structural constraint."""
         return True
+
+    @property
+    def edge_mutation(self):
+        return "remove"
     
 
 
@@ -617,26 +617,20 @@ class RingLengthAtLeastProjector(AbstractProjector):
     - Config: rev_proj: 'ring_length_at_least', min_ring_length: N
     - Post-generation: Run RDKit validation to measure chemical properties
     
-    TODO: FUTURE WORK - Implementation removed for simplification
-    This projector class is kept as a placeholder for future edge-insertion constraint work.
-    Current focus is on edge-deletion constraints (at most) which are production-ready.
     """
-    
+
     def __init__(self, z_t: PlaceHolder, min_ring_length: int, atom_decoder=None):
         self.min_ring_length = min_ring_length
         self.atom_decoder = atom_decoder
         super().__init__(z_t)
-        raise NotImplementedError("RingLengthAtLeastProjector is marked for future work. Use RingLengthAtMostProjector for production workloads.")
 
     def valid_graph_fn(self, nx_graph):
-        """
-        Check if graph satisfies structural constraint: all rings have length at least N.
-        
-        TODO: FUTURE WORK - Implementation removed for simplification
-        """
-        raise NotImplementedError("RingLengthAtLeastProjector is marked for future work. Use RingLengthAtMostProjector for production workloads.")
+        return has_rings_of_length_at_least(nx_graph, self.min_ring_length)
 
     @property
     def can_block_edges(self):
-        """Can block edge removals that would violate structural constraint."""
         return True
+
+    @property
+    def edge_mutation(self):
+        return "remove"

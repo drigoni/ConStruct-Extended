@@ -263,9 +263,9 @@ ConStruct/slurm_jobs/
 - **Projector**: `null`
 - **Use Case**: Generate molecules without structural constraints
 
-**Edge-Insertion Constraints ("At Least")** - *Not Yet Implemented*:
-- **Status**: Documented but not implemented in current codebase
-- **Note**: The `edge_insertion` transition and `ring_count_at_least`/`ring_length_at_least` projectors are commented out in the model configuration
+**Edge-Insertion Constraints ("At Least")**:
+- **Status**: Implemented in the current codebase
+- **Note**: Use the `edge_insertion` transition together with `ring_count_at_least` or `ring_length_at_least` projectors in the model configuration
 
 ### 🧪 **Running Experiments (some examples)**
 

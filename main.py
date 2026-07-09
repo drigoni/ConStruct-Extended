@@ -24,7 +24,7 @@ torch.cuda.empty_cache()
 warnings.filterwarnings("ignore", category=PossibleUserWarning)
 
 
-@hydra.main(version_base="1.3", config_path="../configs", config_name="config")
+@hydra.main(version_base="1.3", config_path="./configs", config_name="config")
 def main(cfg: DictConfig):
     pl.seed_everything(cfg.train.seed)
     dataset_config = cfg.dataset

@@ -7,12 +7,12 @@ resume: null            # If resume, path to ckpt file from outputs directory in
 test_only: null         # Use absolute path
 
 # Validation and sampling frequency (paper-optimized)
-check_val_every_n_epochs: 5        # Standard validation frequency
-sample_every_val: 8                # Sampling every 40 epochs (5*8) for good monitoring
+check_val_every_n_epochs: 10        # Standard validation frequency
+sample_every_val: 4                # Sampling every 40 epochs (10*4) for good monitoring
 val_check_interval: null
 samples_to_generate: 256           # Good stability without killing time (was 200)
-samples_to_save: 50                # Save more samples for analysis (was 50)
-chains_to_save: 10                 # Save more chains for analysis (was 10)
+samples_to_save: 0                # Save more samples for analysis (was 50)
+chains_to_save: 0                 # Save more chains for analysis (was 10)
 log_every_steps: 50
 number_chain_steps: 100            # Optimized chain length
 

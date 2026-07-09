@@ -511,127 +511,62 @@ class AbsorbingEdgesTransition(MarginalTransition):
         assert ((q_e.sum(dim=2) - 1.0).abs() < 1e-4).all()
         return utils.PlaceHolder(X=Qt_bar.X, charges=Qt_bar.charges, E=q_e, y=Qt_bar.y)
 
-# COMMENTED OUT: EdgeInsertionTransition class
-# class EdgeInsertionTransition(MarginalTransition):
-#     """Edge-insertion transition for 'at least' constraints.
-#     
-#     This transition starts with sparse graphs and progressively adds edges.
-#     The limit distribution should be sparse (mostly no edges), not the data marginals.
-#     """
-#     
-#     def __init__(self, cfg, x_marginals, e_marginals, charges_marginals, y_classes):
-#         super().__init__(cfg, x_marginals, e_marginals, charges_marginals, y_classes)
-#         
-#         # For edge-insertion, the limit distribution should be sparse graphs
-#         # Override E_marginals to be mostly no edges (index 0)
-#         self.E_marginals = torch.zeros(self.E_classes)
-#         self.E_marginals[0] = 1  # Edge-insertion: limit distribution is sparse (no edges)
-#         
-#         print(f"🔧 EdgeInsertionTransition: Using sparse limit distribution (no edges)")
-#         print(f"🔧 E_marginals: {self.E_marginals}")
-#         
-#         # Linear schedule for absorbing scheme (as in original ConStruct)
-#         betas_abs = diffusion_utils.linear_beta_schedule(self.timesteps, self.nu_arr)
-#         self._betas_abs = torch.from_numpy(betas_abs)
-#         self._alphas_abs = 1 - torch.clamp(self._betas_abs, min=0, max=0.9999)
-#         # For edge-insertion, cumulative probability of being in edge state should INCREASE with time
-#         self._alphas_abs_bar = 1 - torch.cumprod(self._alphas_abs, dim=0)
-# 
-#     def get_beta_abs(self, t_normalized=None, t_int=None, key=None):
-#         """Get beta schedule for absorbing transition."""
-#         return self._get(
-#             self._betas_abs, t_normalized=t_normalized, t_int=t_int, key=key
-#         )
-# 
-#     def get_alpha_abs_bar(self, t_normalized=None, t_int=None, key=None):
-#         """Get cumulative alpha schedule for absorbing transition."""
-#         return self._get(
-#             self._alphas_abs_bar, t_normalized=t_normalized, t_int=t_int, key=key
-#         )
-# 
-#     def get_Qt(self, t_int):
-#         """
-#         One-step transition matrix for edge-insertion.
-#         
-#         Forward process: Edges progressively appear toward edge state (index 1)
-#         - State 0 (no edge): can transition to edge state 1
-#         - States 1-4 (edge types): absorbing (stay as edge)
-#         
-#         This creates natural bias toward connected graphs, which is desirable
-#         for structural constraints like "at least N rings".
-#         """
-#         Qt = super().get_Qt(t_int)
-# 
-#         dev = t_int.device
-#         Pe = self.Pe.float().to(dev)
-#         be_abs = self.get_beta_abs(t_int=t_int, key="e").unsqueeze(1)
-#         
-#         # ===== EDGE-INSERTION TRANSITION MATRIX =====
-#         # For QM9: 5 edge types [0=no_edge, 1=single, 2=double, 3=triple, 4=aromatic]
-#         batch_size = be_abs.shape[0]
-#         q_e = torch.zeros(batch_size, self.E_classes, self.E_classes, device=dev)
-#         
-#         # State 0 (no edge): can transition to edge state 1
-#         q_e[:, 0, 0] = 1 - be_abs.squeeze()  # 0->0: stay no edge
-#         q_e[:, 0, 1] = be_abs.squeeze()  # 0->1: become single bond (absorbing)
-#         
-#         # States 1-4 (edge types): absorbing (stay as edge)
-#         for i in range(1, self.E_classes):
-#             q_e[:, i, i] = 1  # i->i: stay as edge type i (absorbing)
-# 
-#         return utils.PlaceHolder(X=Qt.X, charges=Qt.charges, E=q_e, y=Qt.y)
-# 
-#     def get_Qt_bar(self, t_int):
-#         """
-#         Cumulative transition matrix for edge-insertion.
-#         
-#         This matrix describes the probability of being in each state at time t
-#         given the initial state at time 0. For edge-insertion, this creates
-#         a natural progression toward more connected graphs over time.
-#         """
-#         dev = t_int.device
-#         
-#         # Get absorbing schedules for all features
-#         a_x_abs = self.get_alpha_abs_bar(t_int=t_int, key="x").unsqueeze(1)
-#         a_c_abs = self.get_alpha_abs_bar(t_int=t_int, key="c").unsqueeze(1)
-#         a_e_abs = self.get_alpha_abs_bar(t_int=t_int, key="e").unsqueeze(1)
-#         a_y_abs = self.get_alpha_abs_bar(t_int=t_int, key="y").unsqueeze(1)
-#         
-#         P = self.move_P_device(t_int)
-#         
-#         # For X, C, Y: use standard absorbing transition
-#         q_x = a_x_abs * torch.eye(self.X_classes, device=dev).unsqueeze(0) + (1 - a_x_abs) * P.X
-#         q_c = a_c_abs * torch.eye(self.charges_classes, device=dev).unsqueeze(0) + (1 - a_c_abs) * P.charges
-#         q_y = a_y_abs * torch.eye(self.y_classes, device=dev).unsqueeze(0) + (1 - a_y_abs) * P.y
-#         
-#         # For E: use edge-insertion transition (start sparse, add edges progressively)
-#         # Edge-insertion: start with identity (sparse) and transition to edge state
-#         Pe = self.Pe.float().to(dev)
-#         q_e = (
-#             (1 - a_e_abs) * torch.eye(self.E_classes, device=dev).unsqueeze(0)
-#             + a_e_abs * Pe
-#         )
-#         
-#                 # Debug logging removed for production
-# 
-#         # Verify transition matrices sum to 1 (probability conservation)
-#         assert ((q_x.sum(dim=2) - 1.0).abs() < 1e-4).all()
-#         assert ((q_e.sum(dim=2) - 1.0).abs() < 1e-4).all()
-#         assert ((q_c.sum(dim=2) - 1.0).abs() < 1e-4).all()
-#         
-#         return utils.PlaceHolder(X=q_x, charges=q_c, E=q_e, y=q_y)
-# 
-#     def sample_zs_from_zt_and_pred(self, z_t, pred, s_int):
-#         """
-#         Reverse process for edge-insertion transition.
-#         
-#         This uses the standard reverse process from MarginalTransition.
-#         The edge-insertion behavior is handled by the transition matrices
-#         (Qt and Qt_bar) which ensure edges are progressively removed
-#         while preserving structural constraints.
-#         
-#         Note: Chemical validity is NOT enforced during this process.
-#         Chemical properties are measured separately after generation.
-#         """
-#         return super().sample_zs_from_zt_and_pred(z_t, pred, s_int)
+class EdgeInsertionTransition(MarginalTransition):
+    """
+    Edge-addition forward diffusion for "at least" constraints.
+
+    Forward diffusion absorbs every edge state toward a selected existing-edge
+    absorbing state (currently edge type index 1). This yields a dense terminal
+    graph, and the reverse process removes edges while a projector can block
+    removals that would violate minimum-ring constraints.
+    """
+
+    def __init__(self, cfg, x_marginals, e_marginals, charges_marginals, y_classes):
+        super().__init__(cfg, x_marginals, e_marginals, charges_marginals, y_classes)
+
+        self.E_marginals = torch.zeros(self.E_classes)
+        self.E_marginals[1] = 1
+        super().complete_init()
+
+        betas_abs = diffusion_utils.linear_beta_schedule(self.timesteps, self.nu_arr)
+        self._betas_abs = torch.from_numpy(betas_abs)
+        self._alphas_abs = 1 - torch.clamp(self._betas_abs, min=0, max=0.9999)
+        self._alphas_abs_bar = torch.cumprod(self._alphas_abs, dim=0)
+
+    def get_beta_abs(self, t_normalized=None, t_int=None, key=None):
+        return self._get(
+            self._betas_abs, t_normalized=t_normalized, t_int=t_int, key=key
+        )
+
+    def get_alpha_abs_bar(self, t_normalized=None, t_int=None, key=None):
+        return self._get(
+            self._alphas_abs_bar, t_normalized=t_normalized, t_int=t_int, key=key
+        )
+
+    def get_Qt(self, t_int):
+        Qt = super().get_Qt(t_int)
+
+        dev = t_int.device
+        Pe = self.Pe.float().to(dev)
+        be_abs = self.get_beta_abs(t_int=t_int, key="e").unsqueeze(1)
+        q_e = be_abs * Pe + (1 - be_abs) * torch.eye(
+            self.E_classes, device=dev
+        ).unsqueeze(0)
+
+        return utils.PlaceHolder(X=Qt.X, charges=Qt.charges, E=q_e, y=Qt.y)
+
+    def get_Qt_bar(self, t_int):
+        Qt_bar = super().get_Qt_bar(t_int)
+
+        dev = t_int.device
+        Pe = self.Pe.float().to(dev)
+        a_e_abs = self.get_alpha_abs_bar(t_int=t_int, key="e").unsqueeze(1)
+        q_e = (
+            a_e_abs * torch.eye(self.E_classes, device=dev).unsqueeze(0)
+            + (1 - a_e_abs) * Pe
+        )
+
+        assert ((q_e.sum(dim=2) - 1.0).abs() < 1e-4).all()
+        return utils.PlaceHolder(X=Qt_bar.X, charges=Qt_bar.charges, E=q_e, y=Qt_bar.y)
+
 

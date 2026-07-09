@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=qm9_no_constraint_thesis
-#SBATCH --output=/home/drigoni/repository/ConStruct-Thesis/slurm_jobs/logs/thesis/qm9_no_constraint_thesis_%j.out
+#SBATCH --job-name=qm9_no_constraint_edge_absorbing
+#SBATCH --output=/home/drigoni/repository/ConStruct-Thesis/slurm_jobs/out/qm9_no_constraint_edge_absorbing_%j.out
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=31G
@@ -69,14 +69,13 @@ export PYTORCH_CUDNN_BENCHMARK=1
 export PYTHONUNBUFFERED=1
 
 
-echo "=== Running Experiment: qm9_no_constraint_thesis ==="
-echo "Config: thesis/no_constraint/qm9_thesis_no_constraint"
+echo "=== Running Experiment: qm9_no_constraint_edge_absorbing ==="
+echo "Config: training/qm9_no_constraint_edge_absorbing"
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
 echo "Time: $(date)"
 
 # Run the experiment
-cd ConStruct
-python main.py +experiment=thesis/no_constraint/qm9_thesis_no_constraint
+python main.py +experiment=training/qm9_no_constraint_edge_absorbing
 
 echo "Experiment completed at $(date)"

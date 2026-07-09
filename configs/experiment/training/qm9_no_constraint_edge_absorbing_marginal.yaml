@@ -3,7 +3,7 @@ defaults:
   - override /dataset: qm9     # Use QM9 dataset instead of default planar
 
 general:
-  name: qm9_thesis_no_constraint_marginal  # Override name for this specific experiment
+  name: qm9_no_constraint_edge_absorbing_marginal  # Override name for this specific experiment
   
 model:
   diffusion_steps: 500

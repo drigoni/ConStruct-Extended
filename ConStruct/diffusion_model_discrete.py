@@ -26,7 +26,7 @@ from ConStruct.diffusion.noise_model import (
     MarginalTransition,
     AbsorbingTransition,
     AbsorbingEdgesTransition,
-    # EdgeInsertionTransition,  # COMMENTED OUT
+    EdgeInsertionTransition,
 )
 from ConStruct.diffusion import diffusion_utils
 from ConStruct.metrics.train_metrics import TrainLoss
@@ -49,8 +49,8 @@ from ConStruct.projector.projector_utils import (
     LobsterProjector,
     RingCountAtMostProjector,
     RingLengthAtMostProjector,
-    # RingCountAtLeastProjector,  # COMMENTED OUT
-    # RingLengthAtLeastProjector,  # COMMENTED OUT
+    RingCountAtLeastProjector,
+    RingLengthAtLeastProjector,
 )
 from networkx.algorithms import isomorphism as iso
 from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique, count_simple_cycles, max_simple_cycle_length
@@ -184,17 +184,15 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 charges_marginals=self.dataset_infos.charges_marginals,
                 y_classes=self.output_dims.y,
             )
-        # elif cfg.model.transition == "edge_insertion":
-        #     # COMMENTED OUT: Edge-insertion transition
-        #     # Debug logging removed for production
-        #     self.noise_model = EdgeInsertionTransition(
-        #         cfg=cfg,
-        #         x_marginals=self.dataset_infos.atom_types,
-        #         e_marginals=self.dataset_infos.edge_types,
-        #         charges_marginals=self.dataset_infos.charges_marginals,
-        #         y_classes=self.output_dims.y,
-        #     )
-        #     # Debug logging removed for production
+        elif cfg.model.transition == "edge_insertion":
+            print("Edge-addition transition model (for 'at least' constraints)")
+            self.noise_model = EdgeInsertionTransition(
+                cfg=cfg,
+                x_marginals=self.dataset_infos.atom_types,
+                e_marginals=self.dataset_infos.edge_types,
+                charges_marginals=self.dataset_infos.charges_marginals,
+                y_classes=self.output_dims.y,
+            )
         else:
             # Debug logging removed for production
             assert ValueError(
@@ -232,20 +230,26 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         edge_deletion_transitions = ["absorbing_edges"]
         at_most_projectors = ["ring_count_at_most", "ring_length_at_most"]
         
-        # Edge-insertion transitions should use "at least" projectors  
-        # edge_insertion_transitions = ["edge_insertion"]  # COMMENTED OUT
-        # at_least_projectors = ["ring_count_at_least", "ring_length_at_least"]  # COMMENTED OUT
+        edge_insertion_transitions = ["edge_insertion"]
+        at_least_projectors = ["ring_count_at_least", "ring_length_at_least"]
         
         # Marginal transitions can use any projector
         marginal_transitions = ["marginal", "uniform", "absorbing"]
         
         # Only warn about potentially incompatible combinations, don't raise errors
-        # if transition in edge_deletion_transitions and rev_proj in at_least_projectors:
-        #     print(f"⚠️  WARNING: Edge-deletion transition '{transition}' is designed for 'at most' projectors.")
-        #     print(f"⚠️  WARNING: Using '{rev_proj}' projector. This may not work as expected.")
-        
-        # if transition in edge_insertion_transitions and rev_proj in at_most_projectors:
-        # Edge-insertion transitions commented out (not used)
+        if transition in edge_deletion_transitions and rev_proj in at_least_projectors:
+            logger.warning(
+                "Edge-deletion transition '%s' is usually paired with an 'at most' projector, got '%s'.",
+                transition,
+                rev_proj,
+            )
+
+        if transition in edge_insertion_transitions and rev_proj in at_most_projectors:
+            logger.warning(
+                "Edge-insertion transition '%s' is usually paired with an 'at least' projector, got '%s'.",
+                transition,
+                rev_proj,
+            )
         
         # Log successful validation (commented for clean output)
         # if transition in edge_deletion_transitions:
@@ -828,11 +832,9 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 self._printed_ring_count_mode = True
             rev_projector = RingCountAtMostProjector(z_t, max_rings, atom_decoder)
         elif self.cfg.model.rev_proj == "ring_count_at_least":
-            # TODO: FUTURE WORK - RingCountAtLeastProjector implementation removed for simplification
-            raise NotImplementedError(
-                "ring_count_at_least projector is marked for future work. "
-                "Use ring_count_at_most for production workloads."
-            )
+            min_rings = getattr(self.cfg.model, "min_rings", 1)
+            atom_decoder = getattr(self.dataset_infos, "atom_decoder", None)
+            rev_projector = RingCountAtLeastProjector(z_t, min_rings, atom_decoder)
         elif self.cfg.model.rev_proj == "ring_length_at_most":
             max_ring_length = getattr(self.cfg.model, "max_ring_length", 6)
             atom_decoder = getattr(self.dataset_infos, "atom_decoder", None)
@@ -841,10 +843,10 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 self._printed_ring_length_mode = True
             rev_projector = RingLengthAtMostProjector(z_t, max_ring_length, atom_decoder)
         elif self.cfg.model.rev_proj == "ring_length_at_least":
-            # TODO: FUTURE WORK - RingLengthAtLeastProjector implementation removed for simplification
-            raise NotImplementedError(
-                "ring_length_at_least projector is marked for future work. "
-                "Use ring_length_at_most for production workloads."
+            min_ring_length = getattr(self.cfg.model, "min_ring_length", 3)
+            atom_decoder = getattr(self.dataset_infos, "atom_decoder", None)
+            rev_projector = RingLengthAtLeastProjector(
+                z_t, min_ring_length, atom_decoder
             )
         elif self.cfg.model.rev_proj is None or self.cfg.model.rev_proj == "":
             # No constraint training - no projector needed
@@ -916,6 +918,17 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                         if max_cycle_length > rev_projector.max_ring_length:
                             graph_valid = False
                             # logger.warning(f"⚠️ Graph {graph_idx} has max cycle length {max_cycle_length} > {rev_projector.max_ring_length} at timestep {s_int}")
+                elif hasattr(rev_projector, 'min_rings'):
+                    graph_valid = True
+                    for graph_idx, nx_graph in enumerate(rev_projector.nx_graphs_list):
+                        ring_count = count_simple_cycles(nx_graph)
+                        if ring_count < rev_projector.min_rings:
+                            graph_valid = False
+                elif hasattr(rev_projector, 'min_ring_length'):
+                    graph_valid = True
+                    for graph_idx, nx_graph in enumerate(rev_projector.nx_graphs_list):
+                        if not rev_projector.valid_graph_fn(nx_graph):
+                            graph_valid = False
                 
                 # Assert constraint at t == 0
                 if s_int == 0:
@@ -942,6 +955,20 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                             rev_projector.nx_graphs_list[g_idx] = g
                             # Final assert
                             assert has_rings_of_length_at_most(g, L), f"Post-pass ring-length assertion failed: graph {g_idx} has cycles > length {L} at t=0"
+                    elif hasattr(rev_projector, 'min_rings'):
+                        constraint_kind = "ring_count_at_least"
+                        K = rev_projector.min_rings
+                        for g_idx, g in enumerate(rev_projector.nx_graphs_list):
+                            assert count_simple_cycles(g) >= K, (
+                                f"Post-pass ring-count assertion failed: graph {g_idx} has < {K} cycles at t=0"
+                            )
+                    elif hasattr(rev_projector, 'min_ring_length'):
+                        constraint_kind = "ring_length_at_least"
+                        L = rev_projector.min_ring_length
+                        for g_idx, g in enumerate(rev_projector.nx_graphs_list):
+                            assert rev_projector.valid_graph_fn(g), (
+                                f"Post-pass ring-length assertion failed: graph {g_idx} has no cycle of length >= {L} at t=0"
+                            )
                     
                     # Log final projection info
                     if constraint_kind:

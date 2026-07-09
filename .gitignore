@@ -1,12 +1,12 @@
-ConStruct/slurm_jobs/*
-ConStruct/wandb/*
-ConStruct/logs
-ConStruct/graphs/
-ConStruct/violation_summary*
-ConStruct/checkpoints/*
+wandb/
+logs
+graphs/
+violation_summary*
+checkpoints/*
 data/
 wandb/
 .vscode/
+slurm_jobs/out/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

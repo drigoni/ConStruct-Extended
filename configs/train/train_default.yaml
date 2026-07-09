@@ -19,8 +19,8 @@ lr_scheduler:
 early_stopping:
   enable: true                   # Enable early stopping for efficient training
   monitor: "val/epoch_NLL"       # Monitor negative log-likelihood (validation loss)
-  patience: 28                   # 28 val checks = ~140 epochs with val every 5 (was 20)
-  min_delta: 1e-4                # Filter noise, capture meaningful improvements (was 0.003)
+  patience: 10                   # 28 val checks = ~140 epochs with val every 5 (was 20)
+  min_delta: 5e-5                # Filter noise, capture meaningful improvements (was 0.003)
   mode: "min"                    # Lower NLL is better
   check_finite: true             # Stop training if metric becomes NaN or infinite
   stopping_threshold: null       # No specific threshold

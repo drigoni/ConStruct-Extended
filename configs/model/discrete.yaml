@@ -1,5 +1,5 @@
 # Model settings
-transition: 'absorbing_edges'                          # uniform, marginal, planar, absorbing_edges, # edge_insertion COMMENTED OUT
+transition: 'absorbing_edges'                          # uniform, marginal, planar, absorbing_edges, edge_insertion
 diffusion_steps: 500
 n_layers: 5
 
@@ -10,9 +10,9 @@ rev_proj: null  # planar, tree, lobster, ring_count_at_most, ring_count_at_least
 max_rings: 0     # For ring_count_at_most: maximum number of rings allowed
 max_ring_length: 6  # For ring_length_at_most: maximum ring size allowed
 
-# Edge-insertion constraints (use with edge_insertion transition) - COMMENTED OUT
-# min_rings: 2     # For ring_count_at_least: minimum number of rings required
-# min_ring_length: 4  # For ring_length_at_least: minimum ring size required
+# Edge-insertion constraints (use with edge_insertion transition)
+min_rings: 2     # For ring_count_at_least: minimum number of rings required
+min_ring_length: 4  # For ring_length_at_least: minimum ring size required
 
 
 # Extra features

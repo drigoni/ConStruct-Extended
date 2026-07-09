@@ -3,7 +3,7 @@ defaults:
   - override /dataset: qm9
 
 general:
-  name: 'qm9_thesis_no_constraint'
+  name: 'qm9_no_constraint_edge_absorbing'
 
 model:
   transition: absorbing_edges
