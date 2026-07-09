@@ -239,7 +239,7 @@ class ProteinDataModule(AbstractDataModule):
         self.cfg = cfg
         self.dataset_name = self.cfg.dataset.name
         self.datadir = cfg.dataset.datadir
-        base_path = pathlib.Path(get_original_cwd()).parents[0]
+        base_path = pathlib.Path(get_original_cwd())
         root_path = os.path.join(base_path, "data/DD")
         transform = RemoveYTransform()
 

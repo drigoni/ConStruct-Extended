@@ -278,7 +278,7 @@ class QM9DataModule(MolecularDataModule):
     def __init__(self, cfg):
         self.cfg = cfg
         self.datadir = cfg.dataset.datadir
-        base_path = pathlib.Path(get_original_cwd()).parents[0]
+        base_path = pathlib.Path(get_original_cwd())
         root_path = os.path.join(base_path, self.datadir)
 
         target = getattr(cfg.general, "guidance_target", None)

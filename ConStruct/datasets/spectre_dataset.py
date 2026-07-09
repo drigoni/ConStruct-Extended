@@ -388,7 +388,7 @@ class SpectreGraphDataModule(AbstractDataModule):
             if cfg.dataset.fraction == 1.0
             else cfg.dataset.datadir + f"_{cfg.dataset.fraction}"
         )
-        base_path = pathlib.Path(get_original_cwd()).parents[0]
+        base_path = pathlib.Path(get_original_cwd())
         root_path = os.path.join(base_path, self.datadir)
         transform = RemoveYTransform()
 

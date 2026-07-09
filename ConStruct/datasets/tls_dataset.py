@@ -222,7 +222,7 @@ class TLSDataModule(AbstractDataModule):
         self.cfg = cfg
         self.dataset_name = self.cfg.dataset.name
         self.datadir = cfg.dataset.datadir + f"_{cfg.dataset.num_graphs}"
-        base_path = pathlib.Path(get_original_cwd()).parents[0]
+        base_path = pathlib.Path(get_original_cwd())
         root_path = os.path.join(base_path, self.datadir)
         transform = RemoveYTransform()
 
