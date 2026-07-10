@@ -515,17 +515,27 @@ class EdgeInsertionTransition(MarginalTransition):
     """
     Edge-addition forward diffusion for "at least" constraints.
 
-    Forward diffusion absorbs every edge state toward a selected existing-edge
-    absorbing state (currently edge type index 1). This yields a dense terminal
-    graph, and the reverse process removes edges while a projector can block
-    removals that would violate minimum-ring constraints.
+    Forward diffusion absorbs every edge state toward a fully connected limit
+    distribution supported only on existing edge types. This yields a dense
+    terminal graph with random bond types, and the reverse process removes
+    edges while a projector can block removals that would violate minimum-ring
+    constraints.
     """
 
     def __init__(self, cfg, x_marginals, e_marginals, charges_marginals, y_classes):
         super().__init__(cfg, x_marginals, e_marginals, charges_marginals, y_classes)
 
         self.E_marginals = torch.zeros(self.E_classes)
-        self.E_marginals[1] = 1
+
+        # Force the limit distribution to remain fully connected while letting
+        # the terminal bond type vary across the available edge classes.
+        positive_edge_marginals = e_marginals[1:].clone().to(torch.float32)
+        positive_mass = positive_edge_marginals.sum()
+        if positive_mass <= 0:
+            positive_edge_marginals = torch.ones(self.E_classes - 1, dtype=torch.float32)
+            positive_mass = positive_edge_marginals.sum()
+
+        self.E_marginals[1:] = positive_edge_marginals / positive_mass
         super().complete_init()
 
         betas_abs = diffusion_utils.linear_beta_schedule(self.timesteps, self.nu_arr)

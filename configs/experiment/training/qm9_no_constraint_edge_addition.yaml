@@ -19,3 +19,7 @@ model:
     dim_ffX: 256
     dim_ffE: 256
     dim_ffy: 256
+
+train:
+  early_stopping:
+    divergence_threshold: 300.0    # Stop if NLL exceeds 300.0 (appropriate for QM9 dataset)
