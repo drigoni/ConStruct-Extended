@@ -526,22 +526,14 @@ class EdgeInsertionTransition(MarginalTransition):
         super().__init__(cfg, x_marginals, e_marginals, charges_marginals, y_classes)
 
         self.E_marginals = torch.zeros(self.E_classes)
-
-        # Force the limit distribution to remain fully connected while letting
-        # the terminal bond type vary across the available edge classes.
-        positive_edge_marginals = e_marginals[1:].clone().to(torch.float32)
-        positive_mass = positive_edge_marginals.sum()
-        if positive_mass <= 0:
-            positive_edge_marginals = torch.ones(self.E_classes - 1, dtype=torch.float32)
-            positive_mass = positive_edge_marginals.sum()
-
-        self.E_marginals[1:] = positive_edge_marginals / positive_mass
+        self.E_marginals[1] = 1
         super().complete_init()
 
         betas_abs = diffusion_utils.linear_beta_schedule(self.timesteps, self.nu_arr)
         self._betas_abs = torch.from_numpy(betas_abs)
         self._alphas_abs = 1 - torch.clamp(self._betas_abs, min=0, max=0.9999)
         self._alphas_abs_bar = torch.cumprod(self._alphas_abs, dim=0)
+
 
     def get_beta_abs(self, t_normalized=None, t_int=None, key=None):
         return self._get(
