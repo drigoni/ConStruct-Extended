@@ -6,19 +6,23 @@
 #
 ###############################################################################
 
-import networkx as nx
-from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique
+import warnings
 
-__all__ = ["has_rings_of_length_at_least", "ring_length_at_least_projector", "get_min_ring_length_at_least"]
+import networkx as nx
+from ConStruct.projector.graph_cycles import (
+    enumerate_simple_cycles_unique,
+    max_ring_length_exceeds,
+    max_simple_cycle_length,
+)
+
+__all__ = ["has_rings_of_length_at_least", "ring_length_at_least_projector", "get_max_ring_length_at_least", "get_min_ring_length_at_least"]
 
 
 def has_rings_of_length_at_least(graph, min_length):
-    """Return True if the graph has at least one ring of length >= min_length (all simple rings)."""
-    cycles = list(enumerate_simple_cycles_unique(graph))
-    for cycle in cycles:
-        if len(cycle) >= min_length:
-            return True
-    return False
+    """Return whether the maximum simple-cycle length is at least ``min_length``."""
+    if min_length < 3:
+        raise ValueError("The minimum ring length must be at least 3.")
+    return max_ring_length_exceeds(graph, min_length - 1)
 
 
 def ring_length_at_least_projector(graph, min_length):
@@ -64,8 +68,15 @@ def ring_length_at_least_projector(graph, min_length):
 
 
 def get_min_ring_length_at_least(graph):
-    """Return the length of the smallest ring (all simple rings) in the graph for 'at least' constraints, or 0 if no rings."""
-    cycles = list(enumerate_simple_cycles_unique(graph))
-    if not cycles:
-        return 0
-    return min(len(cycle) for cycle in cycles) 
+    """Deprecated compatibility alias for :func:`get_max_ring_length_at_least`."""
+    warnings.warn(
+        "get_min_ring_length_at_least() is deprecated; use get_max_ring_length_at_least().",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return get_max_ring_length_at_least(graph)
+
+
+def get_max_ring_length_at_least(graph):
+    """Return the maximum simple-cycle length, or zero for an acyclic graph."""
+    return max_simple_cycle_length(graph)

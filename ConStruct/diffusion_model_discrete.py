@@ -205,6 +205,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         if hasattr(cfg.model, 'rev_proj') and cfg.model.rev_proj:
             self._validate_transition_projector_compatibility(cfg)
 
+        self.min_sampling_nodes = self._minimum_feasible_sampling_nodes()
         self.log_every_steps = cfg.general.log_every_steps
         self.number_chain_steps = cfg.general.number_chain_steps
 
@@ -258,6 +259,73 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         #     print(f"✓ Validated: Marginal transition '{transition}' with '{rev_proj}' projector")
         # else:
         #     print(f"✓ Validated: Transition '{transition}' with '{rev_proj}' projector")
+
+    def _minimum_feasible_sampling_nodes(self):
+        """Return the minimum node count needed by an active lower-bound constraint."""
+        projector = getattr(self.cfg.model, "rev_proj", None)
+        if projector == "ring_length_at_least":
+            min_nodes = int(getattr(self.cfg.model, "min_ring_length", 3))
+            if min_nodes < 3:
+                raise ValueError("model.min_ring_length must be at least 3.")
+        elif projector == "ring_count_at_least":
+            min_rings = int(getattr(self.cfg.model, "min_rings", 1))
+            if min_rings < 0:
+                raise ValueError("model.min_rings must be non-negative.")
+            if min_rings == 0:
+                return None
+            from ConStruct.projector.is_ring.is_ring_count_at_least import (
+                has_at_least_n_rings,
+            )
+
+            supported_sizes = torch.nonzero(self.nodes_dist.prob > 0).flatten().tolist()
+            min_nodes = next(
+                (
+                    n
+                    for n in supported_sizes
+                    if has_at_least_n_rings(nx.complete_graph(n), min_rings)
+                ),
+                None,
+            )
+            if min_nodes is None:
+                raise ValueError(
+                    f"The dataset node-count distribution cannot satisfy "
+                    f"ring_count_at_least={min_rings}."
+                )
+        else:
+            return None
+
+        if self.nodes_dist.prob[min_nodes:].sum() <= 0:
+            raise ValueError(
+                f"The dataset node-count distribution has no support for the "
+                f"minimum feasible size n={min_nodes}."
+            )
+        return min_nodes
+
+    def _assert_final_constraint(self, final_batch):
+        projector = getattr(self.cfg.model, "rev_proj", None)
+        if projector not in {"ring_count_at_least", "ring_length_at_least"}:
+            return
+
+        from ConStruct.projector.projector_utils import build_simple_graph_from_edge_tensor
+        from ConStruct.projector.is_ring.is_ring_count_at_least import has_at_least_n_rings
+        from ConStruct.projector.is_ring.is_ring_length_at_least import (
+            has_rings_of_length_at_least,
+        )
+
+        for graph_idx, (edge_mat, mask) in enumerate(
+            zip(final_batch.E, final_batch.node_mask)
+        ):
+            graph = build_simple_graph_from_edge_tensor(edge_mat, mask)
+            if projector == "ring_count_at_least":
+                threshold = int(self.cfg.model.min_rings)
+                valid = has_at_least_n_rings(graph, threshold)
+            else:
+                threshold = int(self.cfg.model.min_ring_length)
+                valid = has_rings_of_length_at_least(graph, threshold)
+            if not valid:
+                raise AssertionError(
+                    f"Returned tensor graph {graph_idx} violates {projector}={threshold}."
+                )
 
     def forward(self, z_t):
         assert z_t.node_mask is not None
@@ -579,17 +647,23 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             constraint_type = None
             constraint_value = None
             
-            # Check for ring constraints in config
-            if hasattr(self.cfg, 'rev_proj'):
-                if self.cfg.rev_proj == 'ring_count_at_most':
+            # Check for ring constraints in the model config.
+            if hasattr(self.cfg.model, 'rev_proj'):
+                if self.cfg.model.rev_proj == 'ring_count_at_most':
                     constraint_type = 'ring_count_at_most'
-                    constraint_value = getattr(self.cfg, 'max_rings', None)
-                elif self.cfg.rev_proj == 'ring_length_at_most':
+                    constraint_value = getattr(self.cfg.model, 'max_rings', None)
+                elif self.cfg.model.rev_proj == 'ring_length_at_most':
                     constraint_type = 'ring_length_at_most'
-                    constraint_value = getattr(self.cfg, 'max_ring_length', None)
+                    constraint_value = getattr(self.cfg.model, 'max_ring_length', None)
+                elif self.cfg.model.rev_proj == 'ring_count_at_least':
+                    constraint_type = 'ring_count_at_least'
+                    constraint_value = getattr(self.cfg.model, 'min_rings', None)
+                elif self.cfg.model.rev_proj == 'ring_length_at_least':
+                    constraint_type = 'ring_length_at_least'
+                    constraint_value = getattr(self.cfg.model, 'min_ring_length', None)
             
-            # Set constraint info in dataset_infos for violation tracking
-            if constraint_type and constraint_value:
+            # Set constraint info in dataset_infos for reporting metadata.
+            if constraint_type and constraint_value is not None:
                 self.dataset_infos.constraint_type = constraint_type
                 self.dataset_infos.constraint_value = constraint_value
                 print(f"[CONSTRAINT INFO] Type: {constraint_type}, Value: {constraint_value}")
@@ -855,7 +929,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 print(f"🔧 No constraint training - generating unrestricted graphs")
                 self._printed_no_constraint_mode = True
         else:
-            assert ValueError(
+            raise ValueError(
                 f"Projection type '{self.cfg.model.rev_proj}' not implemented."
             )
 
@@ -921,8 +995,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 elif hasattr(rev_projector, 'min_rings'):
                     graph_valid = True
                     for graph_idx, nx_graph in enumerate(rev_projector.nx_graphs_list):
-                        ring_count = count_simple_cycles(nx_graph)
-                        if ring_count < rev_projector.min_rings:
+                        if not rev_projector.valid_graph_fn(nx_graph):
                             graph_valid = False
                 elif hasattr(rev_projector, 'min_ring_length'):
                     graph_valid = True
@@ -959,7 +1032,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                         constraint_kind = "ring_count_at_least"
                         K = rev_projector.min_rings
                         for g_idx, g in enumerate(rev_projector.nx_graphs_list):
-                            assert count_simple_cycles(g) >= K, (
+                            assert rev_projector.valid_graph_fn(g), (
                                 f"Post-pass ring-count assertion failed: graph {g_idx} has < {K} cycles at t=0"
                             )
                     elif hasattr(rev_projector, 'min_ring_length'):
@@ -1138,6 +1211,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 chains.charges[-1] = charges[:keep_chain]
 
         final_batch = sampled_s
+        self._assert_final_constraint(final_batch)
 
         # Visualize chains
         if keep_chain > 0:
@@ -1224,7 +1298,9 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # The first graphs are sampled without sorting the sizes, so that the visualizations are not biased
         first_sampling = min(samples_to_generate, max(samples_to_save, chains_to_save))
         if first_sampling > 0:
-            n_nodes = self.nodes_dist.sample_n(first_sampling, self.device)
+            n_nodes = self.nodes_dist.sample_n(
+                first_sampling, self.device, min_nodes=self.min_sampling_nodes
+            )
             current_max_size = 0
             current_n_list = []
             for i, n in enumerate(n_nodes):
@@ -1273,7 +1349,9 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 return samples
 
         n_nodes = self.nodes_dist.sample_n(
-            samples_to_generate - first_sampling, self.device
+            samples_to_generate - first_sampling,
+            self.device,
+            min_nodes=self.min_sampling_nodes,
         )
 
         if self.cfg.dataset.adaptive_loader:

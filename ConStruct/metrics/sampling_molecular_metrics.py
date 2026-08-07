@@ -384,7 +384,9 @@ class SamplingMolecularMetrics(nn.Module):
             kind = detect_constraint_kind(metrics_to_pass, split, self.cfg)
             constraint_meta = {
                 "max_rings": getattr(self.cfg.model, 'max_rings', None),
-                "max_ring_length": getattr(self.cfg.model, 'max_ring_length', None)
+                "max_ring_length": getattr(self.cfg.model, 'max_ring_length', None),
+                "min_rings": getattr(self.cfg.model, 'min_rings', None),
+                "min_ring_length": getattr(self.cfg.model, 'min_ring_length', None),
             }
             constraint_str = constraint_caption(kind, constraint_meta)
             
@@ -402,6 +404,8 @@ class SamplingMolecularMetrics(nn.Module):
                 ring_length_counts,             # per-molecule MAX ring-length histogram (with 0=acyclic)
                 max_rings=getattr(self.cfg.model, 'max_rings', None),
                 max_ring_length=getattr(self.cfg.model, 'max_ring_length', None),
+                min_rings=getattr(self.cfg.model, 'min_rings', None),
+                min_ring_length=getattr(self.cfg.model, 'min_ring_length', None),
                 cfg=self.cfg,  # Pass configuration for constraint detection
             )
             
@@ -610,6 +614,12 @@ class SamplingMolecularMetrics(nn.Module):
                 elif self.cfg.model.rev_proj == 'ring_length_at_most':
                     constraint_type = 'ring_length_at_most'
                     constraint_value = getattr(self.cfg.model, 'max_ring_length', None)
+                elif self.cfg.model.rev_proj == 'ring_count_at_least':
+                    constraint_type = 'ring_count_at_least'
+                    constraint_value = getattr(self.cfg.model, 'min_rings', None)
+                elif self.cfg.model.rev_proj == 'ring_length_at_least':
+                    constraint_type = 'ring_length_at_least'
+                    constraint_value = getattr(self.cfg.model, 'min_ring_length', None)
                 elif self.cfg.model.rev_proj == 'planar':
                     constraint_type = 'planar'
                     constraint_value = None
@@ -633,6 +643,17 @@ class SamplingMolecularMetrics(nn.Module):
                         violations['ring_count'].append({
                             'index': f"{batch_idx}_{graph_idx}",
                             'max_allowed': constraint_value,
+                            'actual': count_simple_cycles(nx_graph),
+                            'source': f'rank{local_rank}'
+                        })
+
+                if constraint_type == "ring_count_at_least" and constraint_value is not None:
+                    from ConStruct.projector.is_ring.is_ring_count_at_least import has_at_least_n_rings
+                    if not has_at_least_n_rings(nx_graph, constraint_value):
+                        violations['ring_count'].append({
+                            'index': f"{batch_idx}_{graph_idx}",
+                            'min_allowed': constraint_value,
+                            'actual': count_simple_cycles(nx_graph),
                             'source': f'rank{local_rank}'
                         })
                 
@@ -643,6 +664,17 @@ class SamplingMolecularMetrics(nn.Module):
                         violations['ring_length'].append({
                             'index': f"{batch_idx}_{graph_idx}",
                             'max_allowed': constraint_value,
+                            'actual': max_simple_cycle_length(nx_graph),
+                            'source': f'rank{local_rank}'
+                        })
+
+                if constraint_type == "ring_length_at_least" and constraint_value is not None:
+                    from ConStruct.projector.is_ring.is_ring_length_at_least import has_rings_of_length_at_least
+                    if not has_rings_of_length_at_least(nx_graph, constraint_value):
+                        violations['ring_length'].append({
+                            'index': f"{batch_idx}_{graph_idx}",
+                            'min_allowed': constraint_value,
+                            'actual': max_simple_cycle_length(nx_graph),
                             'source': f'rank{local_rank}'
                         })
                 
@@ -670,9 +702,9 @@ class SamplingMolecularMetrics(nn.Module):
         
         # Only save violations for the enforced constraint
         enforced_violations = {}
-        if constraint_type == 'ring_count_at_most':
+        if constraint_type in {'ring_count_at_most', 'ring_count_at_least'}:
             enforced_violations['ring_count'] = violations['ring_count']
-        elif constraint_type == 'ring_length_at_most':
+        elif constraint_type in {'ring_length_at_most', 'ring_length_at_least'}:
             enforced_violations['ring_length'] = violations['ring_length']
         elif constraint_type == 'planar':
             enforced_violations['planarity'] = violations['planarity']
@@ -710,6 +742,10 @@ class SamplingMolecularMetrics(nn.Module):
                         constraint_value = getattr(self.cfg.model, 'max_rings', None)
                     elif constraint_type == 'ring_length_at_most':
                         constraint_value = getattr(self.cfg.model, 'max_ring_length', None)
+                    elif constraint_type == 'ring_count_at_least':
+                        constraint_value = getattr(self.cfg.model, 'min_rings', None)
+                    elif constraint_type == 'ring_length_at_least':
+                        constraint_value = getattr(self.cfg.model, 'min_ring_length', None)
                 
                 if constraint_value is not None:
                     f.write(f"Constraint Value: {constraint_value}\n")
@@ -1425,9 +1461,9 @@ def check_ring_constraints(smiles_list, constraint_type, constraint_value, logge
             elif constraint_type == "ring_length_at_least":
                 try:
                     ring_info = mol.GetRingInfo()
-                    min_len = min((len(r) for r in ring_info.AtomRings()), default=float('inf'))
-                    ring_lengths.append(min_len)
-                    return min_len >= constraint_value
+                    max_len = max((len(r) for r in ring_info.AtomRings()), default=0)
+                    ring_lengths.append(max_len)
+                    return max_len >= constraint_value
                 except Exception as e:
                     logger(f"[WARNING] Ring length calculation failed for SMILES: {smi}, error: {e}")
                     return None
@@ -1662,9 +1698,9 @@ def check_ring_constraints_all_molecules(smiles_list, constraint_type, constrain
             elif constraint_type == "ring_length_at_least":
                 try:
                     ring_info = mol.GetRingInfo()
-                    min_len = min((len(r) for r in ring_info.AtomRings()), default=float('inf'))
-                    ring_lengths.append(min_len)
-                    return min_len >= constraint_value
+                    max_len = max((len(r) for r in ring_info.AtomRings()), default=0)
+                    ring_lengths.append(max_len)
+                    return max_len >= constraint_value
                 except Exception as e:
                     logger(f"[WARNING] Ring length calculation failed for SMILES: {smi}, error: {e}")
                     return None

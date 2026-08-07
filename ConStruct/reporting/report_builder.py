@@ -157,20 +157,30 @@ def split_prefix(split: str) -> str:
 
 # -------- constraint detection & captions --------
 def detect_constraint_kind(metrics: Dict[str, Any], split: str, cfg=None) -> str:
-    p = split_prefix(split)
-    # Check for enforced constraints (satisfaction metrics)
-    if f"{p}/ring_count_satisfaction" in metrics: return "ring_count"
-    if f"{p}/ring_length_satisfaction" in metrics: return "ring_length"
-    # Check configuration for planarity constraint
-    if cfg is not None and hasattr(cfg.model, 'rev_proj') and cfg.model.rev_proj == "planar":
-        return "planarity"
-    # For no-constraint trainings, even if planarity is high, it's not enforced
+    if cfg is not None and hasattr(cfg.model, "rev_proj"):
+        projector = cfg.model.rev_proj
+        if projector in {
+            "ring_count_at_most",
+            "ring_count_at_least",
+            "ring_length_at_most",
+            "ring_length_at_least",
+            "planar",
+        }:
+            return "planarity" if projector == "planar" else projector
     return "none"
 
+
 def constraint_caption(kind: str, meta: Dict[str, Any]) -> str:
-    if kind == "ring_count":  return f"Ring count ≤ {meta.get('max_rings','k')}"
-    if kind == "ring_length": return f"Ring length ≤ {meta.get('max_ring_length','L')}"
-    if kind == "planarity":   return "Planar molecules only"
+    if kind == "ring_count_at_most":
+        return f"Ring count ≤ {meta.get('max_rings', 'k')}"
+    if kind == "ring_count_at_least":
+        return f"Ring count ≥ {meta.get('min_rings', 'k')}"
+    if kind == "ring_length_at_most":
+        return f"Maximum ring length ≤ {meta.get('max_ring_length', 'L')}"
+    if kind == "ring_length_at_least":
+        return f"Maximum ring length ≥ {meta.get('min_ring_length', 'L')}"
+    if kind == "planarity":
+        return "Planar molecules only"
     return "No structural constraint"
 
 # -------- Core (main) --------
@@ -187,8 +197,10 @@ def collect_core(split: str, metrics: Dict[str, Any], N_total: Optional[int], cf
     kind = detect_constraint_kind(metrics, split, cfg)
     prop = None
     if kind == "planarity":   prop = metrics.get(f"{p}/planarity")
-    elif kind == "ring_count":   prop = metrics.get(f"{p}/ring_count_satisfaction")
-    elif kind == "ring_length":  prop = metrics.get(f"{p}/ring_length_satisfaction")
+    elif kind in {"ring_count_at_most", "ring_count_at_least"}:
+        prop = metrics.get(f"{p}/ring_count_satisfaction")
+    elif kind in {"ring_length_at_most", "ring_length_at_least"}:
+        prop = metrics.get(f"{p}/ring_length_satisfaction")
     rows.append(("Property satisfied (%)", "—" if kind=="none" else pct(prop)))
     # V.U.N. (%), over generated set
     u = metrics.get(f"{p}/Uniqueness"); n = metrics.get(f"{p}/Novelty"); v = metrics.get(f"{p}/Validity")
@@ -210,132 +222,95 @@ def core_definitions_md() -> str:
     )
 
 # -------- Structural (main) --------
-def collect_structural(split: str, metrics: Dict[str, Any], N_total: Optional[int],
-                       ring_count_counts: Optional[List[int]]=None,
-                       ring_length_counts: Optional[List[int]]=None,
-                       max_rings: Optional[int]=None,
-                       max_ring_length: Optional[int]=None,
-                       cfg=None) -> List[Tuple[str,str]]:
+def collect_structural(
+    split: str,
+    metrics: Dict[str, Any],
+    N_total: Optional[int],
+    ring_count_counts: Optional[List[int]] = None,
+    ring_length_counts: Optional[List[int]] = None,
+    max_rings: Optional[int] = None,
+    max_ring_length: Optional[int] = None,
+    min_rings: Optional[int] = None,
+    min_ring_length: Optional[int] = None,
+    cfg=None,
+) -> List[Tuple[str, str]]:
     p = split_prefix(split)
     rows = []
     kind = detect_constraint_kind(metrics, split, cfg)
 
-    # 1) Satisfaction row
     if kind == "planarity":
         rows.append(("Planarity satisfied (%)", pct(metrics.get(f"{p}/planarity"))))
-    elif kind == "ring_count":
+    elif kind.startswith("ring_count_"):
         rows.append(("Ring count satisfied (%)", pct(metrics.get(f"{p}/ring_count_satisfaction"))))
-    elif kind == "ring_length":
+    elif kind.startswith("ring_length_"):
         rows.append(("Ring length satisfied (%)", pct(metrics.get(f"{p}/ring_length_satisfaction"))))
     else:
         rows.append(("Constraint", "No structural constraint"))
 
-    # 2) Distributions (per-molecule)
-    # For ring count constraints: show only ring count distribution
-    if kind == "ring_count" and ring_count_counts is not None:
-        if max_rings is not None:
-            # Constrained training: show up to max_rings, then calculate >max_rings
-            for i in range(max_rings + 1):
-                count = ring_count_counts[i] if i < len(ring_count_counts) else 0
-                label = f"Ring count {i} (%)"
-                pct_val = (100.0 * count / N_total) if N_total else 0.0
-                rows.append((label, f"{round(pct_val, 4)}%"))
-            # Calculate >max_rings from actual data to detect constraint violations
-            sum_gt = 0
-            for i in range(max_rings + 1, len(ring_count_counts)):
-                sum_gt += ring_count_counts[i]
-            pct_gt = (100.0 * sum_gt / N_total) if N_total else 0.0
-            rows.append((f"Ring count >{max_rings} (%)", f"{round(pct_gt, 4)}%"))
-        else:
-            # Unconstrained training: show all natural distribution
-            for i, count in enumerate(ring_count_counts):
-                label = f"Ring count {i} (%)" if i < 9 else "Ring count 9+ (%)"
-                pct_val = (100.0 * count / N_total) if N_total else 0.0
-                rows.append((label, f"{round(pct_val, 4)}%"))
+    def add_ring_count(index, count):
+        label = f"Ring count {index} (%)" if index < 9 else "Ring count 9+ (%)"
+        rows.append((label, f"{round(100.0 * count / N_total, 4) if N_total else 0.0}%"))
 
-    # For ring length constraints: show only ring length distribution
-    elif kind == "ring_length" and ring_length_counts is not None:
-        # index 0 = acyclic
-        count0 = ring_length_counts[0] if len(ring_length_counts) > 0 else 0
-        pct0 = (100.0 * count0 / N_total) if N_total else 0.0
-        rows.append(("Acyclic (max len 0) (%)", f"{round(pct0, 4)}%"))
+    def ring_length_count(length):
+        if length == 0:
+            return ring_length_counts[0] if ring_length_counts else 0
+        index = (length - 3) + 1
+        return ring_length_counts[index] if ring_length_counts and index < len(ring_length_counts) else 0
 
-        # indices 1..10 => lengths 3..12 ; index 11 => >12
-        # For constrained trainings, show only up to enforced value and set bigger values to 0
-        # For unconstrained trainings, show all natural distribution
-        if kind == "ring_length" and max_ring_length is not None:
-            # Constrained training: show up to max_ring_length, then calculate >max_ring_length
-            L = max_ring_length
-            # 3..L
-            for length in range(3, L+1):
-                idx = (length - 3) + 1  # map 3→1
-                count = ring_length_counts[idx] if idx < len(ring_length_counts) else 0
-                pct_val = (100.0 * count / N_total) if N_total else 0.0
-                rows.append((f"Ring length {length} (max) (%)", f"{round(pct_val, 4)}%"))
-            # Calculate >L from actual data to detect constraint violations
-            sum_gt = 0
-            for idx in range((L - 3) + 2, len(ring_length_counts)):  # indices whose length > L
-                sum_gt += ring_length_counts[idx]
-            pct_gt = (100.0 * sum_gt / N_total) if N_total else 0.0
-            rows.append((f"Ring length >{L} (max) (%)", f"{round(pct_gt, 4)}%"))
-        else:
-            # Natural distribution: show 3..12 and >12
-            for length in range(3, 13):
-                idx = (length - 3) + 1
-                count = ring_length_counts[idx] if idx < len(ring_length_counts) else 0
-                pct_val = (100.0 * count / N_total) if N_total else 0.0
-                rows.append((f"Ring length {length} (max) (%)", f"{round(pct_val, 4)}%"))
-            # >12
-            count_gt = ring_length_counts[-1] if len(ring_length_counts) > 0 else 0
-            pct_gt = (100.0 * count_gt / N_total) if N_total else 0.0
-            rows.append(("Ring length >12 (max) (%)", f"{round(pct_gt, 4)}%"))
-
-    # For planarity constraints: show only planarity satisfaction, no ring distributions
-    elif kind == "planarity":
-        # Planarity constraints don't show ring distributions
-        pass
-
-    # For no-constraint trainings: show both distributions (natural)
+    if kind == "ring_count_at_most" and ring_count_counts is not None:
+        threshold = int(max_rings)
+        for index in range(threshold + 1):
+            add_ring_count(index, ring_count_counts[index] if index < len(ring_count_counts) else 0)
+        violating = sum(ring_count_counts[threshold + 1:])
+        rows.append((f"Ring count >{threshold} (%)", f"{round(100.0 * violating / N_total, 4) if N_total else 0.0}%"))
+    elif kind == "ring_count_at_least" and ring_count_counts is not None:
+        threshold = int(min_rings)
+        violating = sum(ring_count_counts[:threshold])
+        rows.append((f"Ring count <{threshold} (%)", f"{round(100.0 * violating / N_total, 4) if N_total else 0.0}%"))
+        for index in range(threshold, len(ring_count_counts)):
+            add_ring_count(index, ring_count_counts[index])
+    elif kind == "ring_length_at_most" and ring_length_counts is not None:
+        threshold = int(max_ring_length)
+        rows.append(("Acyclic (max len 0) (%)", f"{round(100.0 * ring_length_count(0) / N_total, 4) if N_total else 0.0}%"))
+        for length in range(3, threshold + 1):
+            count = ring_length_count(length)
+            rows.append((f"Ring length {length} (max) (%)", f"{round(100.0 * count / N_total, 4) if N_total else 0.0}%"))
+        first_violating_index = (threshold - 3) + 2
+        violating = sum(ring_length_counts[first_violating_index:])
+        rows.append((f"Ring length >{threshold} (max) (%)", f"{round(100.0 * violating / N_total, 4) if N_total else 0.0}%"))
+    elif kind == "ring_length_at_least" and ring_length_counts is not None:
+        threshold = int(min_ring_length)
+        violating = ring_length_count(0) + sum(ring_length_count(length) for length in range(3, threshold))
+        rows.append((f"Maximum ring length <{threshold} (%)", f"{round(100.0 * violating / N_total, 4) if N_total else 0.0}%"))
+        for length in range(threshold, 13):
+            count = ring_length_count(length)
+            rows.append((f"Ring length {length} (max) (%)", f"{round(100.0 * count / N_total, 4) if N_total else 0.0}%"))
+        rows.append(("Ring length >12 (max) (%)", f"{round(100.0 * ring_length_counts[-1] / N_total, 4) if N_total else 0.0}%"))
     elif kind == "none":
-        # Show ring count distribution
         if ring_count_counts is not None:
-            for i, count in enumerate(ring_count_counts):
-                label = f"Ring count {i} (%)" if i < 9 else "Ring count 9+ (%)"
-                pct_val = (100.0 * count / N_total) if N_total else 0.0
-                rows.append((label, f"{round(pct_val, 4)}%"))
-        
-        # Show ring length distribution
+            for index, count in enumerate(ring_count_counts):
+                add_ring_count(index, count)
         if ring_length_counts is not None:
-            # index 0 = acyclic
-            count0 = ring_length_counts[0] if len(ring_length_counts) > 0 else 0
-            pct0 = (100.0 * count0 / N_total) if N_total else 0.0
-            rows.append(("Acyclic (max len 0) (%)", f"{round(pct0, 4)}%"))
-
-            # Natural distribution: show 3..12 and >12
+            rows.append(("Acyclic (max len 0) (%)", f"{round(100.0 * ring_length_count(0) / N_total, 4) if N_total else 0.0}%"))
             for length in range(3, 13):
-                idx = (length - 3) + 1
-                count = ring_length_counts[idx] if idx < len(ring_length_counts) else 0
-                pct_val = (100.0 * count / N_total) if N_total else 0.0
-                rows.append((f"Ring length {length} (max) (%)", f"{round(pct_val, 4)}%"))
-            # >12
-            count_gt = ring_length_counts[-1] if len(ring_length_counts) > 0 else 0
-            pct_gt = (100.0 * count_gt / N_total) if N_total else 0.0
-            rows.append(("Ring length >12 (max) (%)", f"{round(pct_gt, 4)}%"))
-
+                count = ring_length_count(length)
+                rows.append((f"Ring length {length} (max) (%)", f"{round(100.0 * count / N_total, 4) if N_total else 0.0}%"))
+            rows.append(("Ring length >12 (max) (%)", f"{round(100.0 * ring_length_counts[-1] / N_total, 4) if N_total else 0.0}%"))
     return rows
 
+
 # -------- Alignment (appendix) --------
-def collect_alignment(split: str, metrics: Dict[str, Any]) -> List[Tuple[str,str]]:
+def collect_alignment(split: str, metrics: Dict[str, Any]) -> List[Tuple[str, str]]:
     p = split_prefix(split)
     rows = []
-    rows.append(("NumNodes W1",   f3(to_scalar(metrics.get(f"{p}/NumNodesW1")))))
-    rows.append(("NodeTypes TV",  f3(to_scalar(metrics.get(f"{p}/NodeTypesTV")))))
-    rows.append(("EdgeTypes TV",  f3(to_scalar(metrics.get(f"{p}/EdgeTypesTV")))))
-    # If available, reduce a histogram (abs diff per degree) to a single L1 sum
+    rows.append(("NumNodes W1", f3(to_scalar(metrics.get(f"{p}/NumNodesW1")))))
+    rows.append(("NodeTypes TV", f3(to_scalar(metrics.get(f"{p}/NodeTypesTV")))))
+    rows.append(("EdgeTypes TV", f3(to_scalar(metrics.get(f"{p}/EdgeTypesTV")))))
     if f"{p}/abs_diff_deg_hist" in metrics:
         deg_l1 = to_scalar(metrics.get(f"{p}/abs_diff_deg_hist"))
         rows.append(("Degree hist |Δ| (L1 sum)", f3(deg_l1)))
     return rows
+
 
 # -------- Chemistry (appendix; from valid SMILES, optional) --------
 def chemistry_from_smiles(smiles: List[str]) -> Dict[str, Any]:

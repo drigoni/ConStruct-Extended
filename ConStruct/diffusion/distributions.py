@@ -18,8 +18,21 @@ class DistributionNodes:
         self.prob = prob / prob.sum()
         self.m = torch.distributions.Categorical(probs=prob)
 
-    def sample_n(self, n_samples, device):
-        idx = self.m.sample((n_samples,))
+    def sample_n(self, n_samples, device, min_nodes=None):
+        if min_nodes is None:
+            distribution = self.m
+        else:
+            min_nodes = int(min_nodes)
+            probabilities = self.prob.clone()
+            probabilities[:min_nodes] = 0
+            if probabilities.sum() <= 0:
+                raise ValueError(
+                    f"The node-count distribution has no support for n >= {min_nodes}."
+                )
+            distribution = torch.distributions.Categorical(
+                probs=probabilities / probabilities.sum()
+            )
+        idx = distribution.sample((n_samples,))
         return idx.to(device)
 
     def log_prob(self, batch_n_nodes):

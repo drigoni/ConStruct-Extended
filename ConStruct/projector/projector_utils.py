@@ -573,9 +573,16 @@ class RingCountAtLeastProjector(AbstractProjector):
     """
 
     def __init__(self, z_t: PlaceHolder, min_rings: int, atom_decoder=None):
+        if min_rings < 0:
+            raise ValueError("The minimum ring count must be non-negative.")
         self.min_rings = min_rings
         self.atom_decoder = atom_decoder
         super().__init__(z_t)
+        for graph_idx, graph in enumerate(self.nx_graphs_list):
+            if not self.valid_graph_fn(graph):
+                raise ValueError(
+                    f"Initial graph {graph_idx} cannot satisfy ring_count_at_least={min_rings}."
+                )
 
     def valid_graph_fn(self, nx_graph):
         return has_at_least_n_rings(nx_graph, self.min_rings)
@@ -599,15 +606,15 @@ class RingLengthAtLeastProjector(AbstractProjector):
     Chemical properties are measured post-generation.
     
     Mathematical Construction:
-    - Constraint: "All rings have length at least N" (structural only)
-    - Forward diffusion: Edges progressively appear toward edge state
-    - Reverse diffusion: Edges are removed while preserving min ring length constraint
+    - Constraint: "The maximum simple-cycle length is at least N" (structural only)
+    - Forward diffusion: Edges progressively appear toward the complete edge state
+    - Reverse diffusion: Edges are removed while preserving the lower bound
     - Natural bias: toward connected graphs (more edges = more ring possibilities)
-    
+
     Structural Constraint:
-    - Check ring lengths using unique simple cycles
-    - Block edge removals that would create rings shorter than minimum
-    - Allow edge additions that create rings of sufficient length
+    - Search unique simple cycles and stop as soon as one has length at least N
+    - Block edge removals that would eliminate every sufficiently long cycle
+    - Preserve the exact previous bond type when a removal is blocked
     
     CRITICAL: Chemical validity (valency, connectivity, atom types) is NOT enforced.
     These properties are measured separately after generation using RDKit.
@@ -620,9 +627,17 @@ class RingLengthAtLeastProjector(AbstractProjector):
     """
 
     def __init__(self, z_t: PlaceHolder, min_ring_length: int, atom_decoder=None):
+        if min_ring_length < 3:
+            raise ValueError("The minimum ring length must be at least 3.")
         self.min_ring_length = min_ring_length
         self.atom_decoder = atom_decoder
         super().__init__(z_t)
+        for graph_idx, graph in enumerate(self.nx_graphs_list):
+            if not self.valid_graph_fn(graph):
+                raise ValueError(
+                    f"Initial graph {graph_idx} cannot satisfy "
+                    f"ring_length_at_least={min_ring_length}."
+                )
 
     def valid_graph_fn(self, nx_graph):
         return has_rings_of_length_at_least(nx_graph, self.min_ring_length)

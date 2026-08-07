@@ -56,21 +56,18 @@ def enumerate_simple_cycles_unique(graph: nx.Graph, max_len: Optional[int] = Non
     max_len: if provided, skip cycles longer than this threshold.
     """
     if graph.number_of_edges() == 0 or graph.number_of_nodes() < 3:
-        return []
-    # Use directed view for simple_cycles
+        return
+    # Stream cycles so threshold predicates can stop without materializing all
+    # cycles of dense terminal graphs.
     directed = graph.to_directed()
-    raw_cycles = list(nx.simple_cycles(directed))
-
     seen: Set[Tuple[int, ...]] = set()
-    unique_cycles: List[List[int]] = []
-    for cyc in raw_cycles:
+    for cyc in nx.simple_cycles(directed):
         if max_len is not None and len(cyc) > max_len:
             continue
         can = _canonical_cycle(cyc)
         if len(can) >= 3 and can not in seen:
             seen.add(can)
-            unique_cycles.append(list(can))
-    return unique_cycles
+            yield list(can)
 
 
 def count_simple_cycles(graph: nx.Graph, max_len: Optional[int] = None) -> int:

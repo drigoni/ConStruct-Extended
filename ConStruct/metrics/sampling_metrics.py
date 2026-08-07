@@ -203,6 +203,22 @@ class SamplingMetrics(nn.Module):
                 self.mean_ring_length_satisfaction(ring_length_ratios)
                 ring_constraint_info = ('ring_length_at_most', max_ring_length)
 
+            elif self.cfg.model.rev_proj == 'ring_count_at_least':
+                min_rings = getattr(self.cfg.model, 'min_rings', 1)
+                ring_count_ratios = ring_count_at_least_satisfaction_ratio(
+                    generated_graphs, min_rings
+                ).to(device)
+                self.mean_ring_count_satisfaction(ring_count_ratios)
+                ring_constraint_info = ('ring_count_at_least', min_rings)
+
+            elif self.cfg.model.rev_proj == 'ring_length_at_least':
+                min_ring_length = getattr(self.cfg.model, 'min_ring_length', 3)
+                ring_length_ratios = ring_length_at_least_satisfaction_ratio(
+                    generated_graphs, min_ring_length
+                ).to(device)
+                self.mean_ring_length_satisfaction(ring_length_ratios)
+                ring_constraint_info = ('ring_length_at_least', min_ring_length)
+
         # Degree distributions
         self.deg_histogram(generated_graphs)
 
@@ -233,11 +249,11 @@ class SamplingMetrics(nn.Module):
         # Add ring constraint metrics to WandB logging (using stored info)
         if ring_constraint_info:
             constraint_type, constraint_value = ring_constraint_info
-            if constraint_type == 'ring_count_at_most':
+            if constraint_type in {'ring_count_at_most', 'ring_count_at_least'}:
                 satisfaction_rate = self.mean_ring_count_satisfaction.compute().item()
                 to_log[f"{key}/ring_count_satisfaction"] = satisfaction_rate
                 to_log[f"{key}/ring_count_violation"] = 1 - satisfaction_rate
-            elif constraint_type == 'ring_length_at_most':
+            elif constraint_type in {'ring_length_at_most', 'ring_length_at_least'}:
                 satisfaction_rate = self.mean_ring_length_satisfaction.compute().item()
                 to_log[f"{key}/ring_length_satisfaction"] = satisfaction_rate
                 to_log[f"{key}/ring_length_violation"] = 1 - satisfaction_rate
@@ -490,6 +506,46 @@ def ring_count_satisfaction_ratio(generated_graphs: List[PlaceHolder], max_rings
         satisfaction_ratios, device=generated_graphs[0].X.device
     )
     return satisfaction_ratios
+
+
+def ring_count_at_least_satisfaction_ratio(
+    generated_graphs: List[PlaceHolder], min_rings: int
+):
+    """Return one indicator per graph for the structural ring-count lower bound."""
+    from ConStruct.projector.is_ring.is_ring_count_at_least import has_at_least_n_rings
+    from ConStruct.projector.projector_utils import build_simple_graph_from_edge_tensor
+
+    satisfied = []
+    for batch in generated_graphs:
+        for edge_mat, mask in zip(batch.E, batch.node_mask):
+            try:
+                graph = build_simple_graph_from_edge_tensor(edge_mat, mask)
+                satisfied.append(int(has_at_least_n_rings(graph, min_rings)))
+            except Exception:
+                satisfied.append(0)
+    return torch.tensor(satisfied, device=generated_graphs[0].X.device)
+
+
+def ring_length_at_least_satisfaction_ratio(
+    generated_graphs: List[PlaceHolder], min_ring_length: int
+):
+    """Return one indicator per graph for maximum simple-cycle length >= L."""
+    from ConStruct.projector.is_ring.is_ring_length_at_least import (
+        has_rings_of_length_at_least,
+    )
+    from ConStruct.projector.projector_utils import build_simple_graph_from_edge_tensor
+
+    satisfied = []
+    for batch in generated_graphs:
+        for edge_mat, mask in zip(batch.E, batch.node_mask):
+            try:
+                graph = build_simple_graph_from_edge_tensor(edge_mat, mask)
+                satisfied.append(
+                    int(has_rings_of_length_at_least(graph, min_ring_length))
+                )
+            except Exception:
+                satisfied.append(0)
+    return torch.tensor(satisfied, device=generated_graphs[0].X.device)
 
 
 def ring_length_satisfaction_ratio(generated_graphs: List[PlaceHolder], max_ring_length: int):

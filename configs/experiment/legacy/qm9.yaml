@@ -28,7 +28,7 @@ model:
     # - Ring length: 4,267 violations (3.26% of dataset) for max 6 atoms
     max_rings: 3         # Natural distribution: most molecules have 0-2 rings, max found was 6
     max_ring_length: 6   # Natural distribution: most molecules have rings ≤6, violations start at 7+
-    rev_proj: ring_count  # Options: planar, tree, lobster, ring_count, ring_length
+    rev_proj: ring_count_at_most  # Enforce the configured max_rings limit
     transition: absorbing_edges
 dataset:
     name: qm9

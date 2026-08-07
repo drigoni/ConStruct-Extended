@@ -3,6 +3,7 @@ logs
 graphs/
 violation_summary*
 checkpoints/*
+**/checkpoints/
 data/
 wandb/
 .vscode/
@@ -170,3 +171,10 @@ plots/
 figures_paper/
 plots_tls_dists/
 digipath_data/
+/checkpoints
+
+chains/
+*final_smiles*
+*generated_atom*
+*generated_samples*
+*generated_bond*

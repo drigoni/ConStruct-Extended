@@ -1,0 +1,46 @@
+# @package _global_
+defaults:
+  - override /dataset: moses
+
+general:
+  name: 'moses_debug_ring_length_at_least_4'
+  wandb: 'disabled'
+  check_val_every_n_epochs: 1
+  sample_every_val: 1
+  samples_to_generate: 10
+  samples_to_save: 5
+  chains_to_save: 2
+  final_model_samples_to_generate: 20
+  final_model_samples_to_save: 10
+  final_model_chains_to_save: 5
+  number_chain_steps: 25
+
+train:
+  n_epochs: 5
+  batch_size: 16
+  save_model: false
+  early_stopping:
+    enable: false
+
+model:
+  diffusion_steps: 50
+  n_layers: 1
+  hidden_mlp_dims:
+    X: 8
+    E: 8
+    y: 8
+  hidden_dims:
+    dx: 8
+    de: 8
+    dy: 8
+    n_head: 2
+    dim_ffX: 8
+    dim_ffE: 8
+    dim_ffy: 8
+  min_ring_length: 4
+  rev_proj: ring_length_at_least
+  transition: edge_insertion
+
+dataset:
+  batch_size: 16
+  num_workers: 0

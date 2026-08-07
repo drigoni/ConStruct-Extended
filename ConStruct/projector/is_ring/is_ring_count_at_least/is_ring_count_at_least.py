@@ -7,14 +7,22 @@
 ###############################################################################
 
 import networkx as nx
-from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique, count_simple_cycles
+from ConStruct.projector.graph_cycles import (
+    enumerate_simple_cycles_unique,
+    count_simple_cycles,
+    simple_cycle_count_exceeds,
+)
 
 __all__ = ["has_at_least_n_rings", "ring_count_at_least_projector", "count_rings_at_least"]
 
 
 def has_at_least_n_rings(graph, n):
     """Return True if the graph has at least n rings (all simple rings)."""
-    return count_simple_cycles(graph) >= n
+    if n < 0:
+        raise ValueError("The minimum ring count must be non-negative.")
+    if n == 0:
+        return True
+    return simple_cycle_count_exceeds(graph, n - 1)
 
 
 def ring_count_at_least_projector(graph, min_rings):

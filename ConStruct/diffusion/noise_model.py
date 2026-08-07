@@ -525,6 +525,11 @@ class EdgeInsertionTransition(MarginalTransition):
     def __init__(self, cfg, x_marginals, e_marginals, charges_marginals, y_classes):
         super().__init__(cfg, x_marginals, e_marginals, charges_marginals, y_classes)
 
+        if self.E_classes < 2:
+            raise ValueError("Edge insertion requires a no-edge class and at least one bond class.")
+        if not torch.isfinite(e_marginals).all() or (e_marginals < 0).any():
+            raise ValueError("Edge marginals must be finite and non-negative.")
+
         self.E_marginals = torch.zeros(self.E_classes)
 
         # Force the limit distribution to remain fully connected while letting
@@ -537,6 +542,10 @@ class EdgeInsertionTransition(MarginalTransition):
 
         self.E_marginals[1:] = positive_edge_marginals / positive_mass
         super().complete_init()
+        if self.E_marginals[0] != 0 or not torch.isclose(
+            self.E_marginals.sum(), torch.tensor(1.0)
+        ):
+            raise ValueError("The edge-insertion limit must have zero no-edge mass and sum to one.")
 
         betas_abs = diffusion_utils.linear_beta_schedule(self.timesteps, self.nu_arr)
         self._betas_abs = torch.from_numpy(betas_abs)
@@ -563,6 +572,7 @@ class EdgeInsertionTransition(MarginalTransition):
             self.E_classes, device=dev
         ).unsqueeze(0)
 
+        assert ((q_e.sum(dim=2) - 1.0).abs() < 1e-4).all()
         return utils.PlaceHolder(X=Qt.X, charges=Qt.charges, E=q_e, y=Qt.y)
 
     def get_Qt_bar(self, t_int):
@@ -578,5 +588,19 @@ class EdgeInsertionTransition(MarginalTransition):
 
         assert ((q_e.sum(dim=2) - 1.0).abs() < 1e-4).all()
         return utils.PlaceHolder(X=Qt_bar.X, charges=Qt_bar.charges, E=q_e, y=Qt_bar.y)
+
+    def sample_limit_dist(self, node_mask):
+        z_t = super().sample_limit_dist(node_mask)
+        structural_edges = z_t.E[..., 1:].sum(dim=-1) > 0
+        active_pairs = node_mask.unsqueeze(1) & node_mask.unsqueeze(2)
+        diagonal = torch.eye(
+            node_mask.shape[1], dtype=torch.bool, device=node_mask.device
+        ).unsqueeze(0)
+        expected_edges = active_pairs & ~diagonal
+        if not torch.equal(structural_edges, expected_edges):
+            raise RuntimeError(
+                "The edge-insertion limit distribution did not produce a complete masked graph."
+            )
+        return z_t
 
 
