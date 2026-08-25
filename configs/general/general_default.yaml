@@ -5,6 +5,8 @@ wandb: 'online'             # online | offline | disabled
 
 resume: null            # If resume, path to ckpt file from outputs directory in main directory
 test_only: null         # Use absolute path
+sampling_only: false    # Load test_only checkpoint and run graph sampling metrics without likelihood evaluation
+sampling_output_dir: samples/${general.name}
 
 # Validation and sampling frequency (paper-optimized)
 check_val_every_n_epochs: 10        # Standard validation frequency

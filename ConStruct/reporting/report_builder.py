@@ -115,6 +115,9 @@ def to_scalar(value) -> Optional[float]:
             return None
     # dict -> sum abs of values
     if isinstance(value, dict):
+        if "counts" in value:
+            counts = value["counts"]
+            return float(sum(abs(float(v)) for v in counts))
         try:
             return float(sum(abs(float(v)) for v in value.values()))
         except Exception:
@@ -217,7 +220,7 @@ def core_definitions_md() -> str:
         "**FCD** — Fréchet ChemNet Distance computed on valid canonical SMILES; lower is better. "
         "**Unique/Novel/Valid** — proportions computed over all generated molecules (not only valid). "
         "**Disconnected** — share of graphs with >1 connected component. "
-        "**Property satisfied** — share of generated graphs meeting the enforced structural constraint. "
+        "**Property satisfied** — share of generated graphs meeting the configured structural target. "
         "**V.U.N.** — product of Valid × Unique × Novel (in [0,100]%).\n"
     )
 

@@ -149,7 +149,9 @@ class SamplingMetrics(nn.Module):
         if hasattr(self.domain_metrics, 'record_projection_time'):
             self.domain_metrics.record_projection_time(projection_time)
 
-    def compute_all_metrics(self, generated_graphs: list, current_epoch, local_rank):
+    def compute_all_metrics(
+        self, generated_graphs: list, current_epoch, local_rank, log_to_wandb=True
+    ):
         """Compare statistics of the generated data with statistics of the val/test set"""
 
         # Number of nodes
@@ -229,23 +231,33 @@ class SamplingMetrics(nn.Module):
             diff_deg_hist,
             abs_diff_deg_hist,
         ) = self.deg_histogram.get_hists_to_log(target_hist=self.stat.degree_hist[0])
+        histogram_values = {
+            f"{key}/generated_deg_hist": {
+                "counts": generated_deg_hist[0].tolist(),
+                "bins": generated_deg_hist[1].tolist(),
+            },
+            f"{key}/diff_deg_hist": {
+                "counts": diff_deg_hist[0].tolist(),
+                "bins": diff_deg_hist[1].tolist(),
+            },
+            f"{key}/abs_diff_deg_hist": {
+                "counts": abs_diff_deg_hist[0].tolist(),
+                "bins": abs_diff_deg_hist[1].tolist(),
+            },
+        }
         to_log = {
             f"{key}/NumNodesW1": self.num_nodes_w1.compute().item(),
             f"{key}/NodeTypesTV": self.node_types_tv.compute().item(),
             f"{key}/EdgeTypesTV": self.edge_types_tv.compute().item(),
-            f"{key}/Disconnected": self.disconnected.compute().item() * 100,  # Add back Disconnected metric
+            f"{key}/Disconnected": self.disconnected.compute().item() * 100,
             f"{key}/MeanComponents": self.mean_components.compute().item(),
             f"{key}/MaxComponents": self.max_components.compute().item(),
             f"{key}/planarity": self.mean_planarity.compute().item(),
             f"{key}/no_cycles": self.mean_no_cycles.compute().item(),
             f"{key}/lobster_components": self.mean_lobster_components.compute().item(),
-            f"{key}/generated_deg_hist": wandb.Histogram(
-                np_histogram=generated_deg_hist
-            ),
-            f"{key}/diff_deg_hist": wandb.Histogram(np_histogram=diff_deg_hist),
-            f"{key}/abs_diff_deg_hist": wandb.Histogram(np_histogram=abs_diff_deg_hist),
+            **histogram_values,
         }
-        
+
         # Add ring constraint metrics to WandB logging (using stored info)
         if ring_constraint_info:
             constraint_type, constraint_value = ring_constraint_info
@@ -274,30 +286,31 @@ class SamplingMetrics(nn.Module):
             )
             to_log.update(ratios)
 
-        if wandb.run:
-            wandb.log(to_log, commit=False)
-        if local_rank == 0:
-            # Show only key metrics in a clean format
-            key_metrics = {
-                'validity': to_log.get(f"{key}/Validity", 0),
-                'uniqueness': to_log.get(f"{key}/Uniqueness", 0),
-                'novelty': to_log.get(f"{key}/Novelty", 0),
-                'fcd_score': to_log.get(f"{key}/fcd score", 0),
-            }
-            
-            
-            # Restore original decimal handling with 3 decimal precision - COMMENT LATER IF UNNECESSARY
-            print(
-                f"Sampling metrics",
-                {
-                    key: (
-                        round(val, 3)
-                        if "hist" not in key
-                        else [round(el, 3) for el in val.histogram]
-                    )
-                    for key, val in to_log.items()
-                },
+        if log_to_wandb and wandb.run:
+            wandb_payload = dict(to_log)
+            wandb_payload[f"{key}/generated_deg_hist"] = wandb.Histogram(
+                np_histogram=generated_deg_hist
             )
+            wandb_payload[f"{key}/diff_deg_hist"] = wandb.Histogram(
+                np_histogram=diff_deg_hist
+            )
+            wandb_payload[f"{key}/abs_diff_deg_hist"] = wandb.Histogram(
+                np_histogram=abs_diff_deg_hist
+            )
+            wandb.log(wandb_payload, commit=False)
+        if local_rank == 0:
+            printable_metrics = {}
+            for metric_name, value in to_log.items():
+                if isinstance(value, dict) and "counts" in value:
+                    printable_metrics[metric_name] = [
+                        round(element, 3) for element in value["counts"]
+                    ]
+                else:
+                    try:
+                        printable_metrics[metric_name] = round(value, 3)
+                    except TypeError:
+                        printable_metrics[metric_name] = value
+            print("Sampling metrics", printable_metrics)
 
         return to_log, edge_tv_per_class
 

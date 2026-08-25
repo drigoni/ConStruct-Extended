@@ -309,4 +309,46 @@ sbatch ConStruct/slurm_jobs/thesis/no_constraint/qm9_no_constraint_thesis.slurm
 sbatch ConStruct/slurm_jobs/thesis/edge_deletion/ring_count_at_most/qm9_ring_count_at_most_3_thesis.slurm
 sbatch ConStruct/slurm_jobs/thesis/edge_deletion/ring_length_at_most/qm9_ring_length_at_most_5_thesis.slurm
 ```
+
+### Checkpoint sampling without likelihood evaluation
+
+Set `general.sampling_only=true` and provide the checkpoint through the existing
+`general.test_only` setting. Sampling-only mode runs once with `train.seed`,
+computes the normal `test_sampling/*` graph metrics, and never initializes or
+logs to W&B.
+
+```bash
+# Sample with the configured projection enabled.
+python main.py \
+  +experiment=thesis/edge_insertion/ring_count_at_least/qm9_thesis_ring_count_at_least_2 \
+  general.sampling_only=true \
+  general.test_only=/absolute/path/to/model.ckpt
+
+# Evaluate the same constraint target without enforcing its projection.
+python main.py \
+  +experiment=thesis/edge_insertion/ring_count_at_least/qm9_thesis_ring_count_at_least_2 \
+  general.sampling_only=true \
+  general.test_only=/absolute/path/to/model.ckpt \
+  model.use_projection=false
+
+# Override output location and sample/visualization counts.
+python main.py \
+  +experiment=thesis/edge_insertion/ring_count_at_least/qm9_thesis_ring_count_at_least_2 \
+  general.sampling_only=true \
+  general.test_only=/absolute/path/to/model.ckpt \
+  general.sampling_output_dir=/absolute/path/to/sampling-run \
+  general.final_model_samples_to_generate=1000 \
+  general.final_model_samples_to_save=100 \
+  general.final_model_chains_to_save=0
+```
+
+Every generated graph is stored in
+`<sampling_output_dir>/generated_samples_rank<N>.pkl`. Rank zero also writes
+`<sampling_output_dir>/sampling_metrics.json`, containing JSON-native metrics,
+histograms, timing, checkpoint and seed provenance, the configured constraint
+target, and whether projection was enabled. The existing `general.test_only`
+five-seed likelihood-evaluation behavior is unchanged when
+`general.sampling_only=false`.
+
+
 ---

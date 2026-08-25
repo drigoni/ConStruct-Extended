@@ -1,3 +1,4 @@
+import json
 import math
 import os
 import pickle
@@ -73,6 +74,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         self.cfg = cfg
         self.name = cfg.general.name
+        self.use_projection = bool(getattr(cfg.model, "use_projection", True))
         self.T = cfg.model.diffusion_steps
 
         self.nodes_dist = dataset_infos.nodes_dist
@@ -301,7 +303,49 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             )
         return min_nodes
 
+    def _build_reverse_projector(self, z_t):
+        """Build the configured projector only when enforcement is enabled."""
+        if not self.use_projection:
+            if not hasattr(self, "_printed_projection_disabled"):
+                print("Projection disabled - generating without constraint enforcement")
+                self._printed_projection_disabled = True
+            return None
+
+        projector = self.cfg.model.rev_proj
+        if projector == "planar":
+            return PlanarProjector(z_t)
+        if projector == "tree":
+            return TreeProjector(z_t)
+        if projector == "lobster":
+            return LobsterProjector(z_t)
+
+        atom_decoder = getattr(self.dataset_infos, "atom_decoder", None)
+        if projector == "ring_count_at_most":
+            return RingCountAtMostProjector(
+                z_t, getattr(self.cfg.model, "max_rings", 0), atom_decoder
+            )
+        if projector == "ring_count_at_least":
+            return RingCountAtLeastProjector(
+                z_t, getattr(self.cfg.model, "min_rings", 1), atom_decoder
+            )
+        if projector == "ring_length_at_most":
+            return RingLengthAtMostProjector(
+                z_t, getattr(self.cfg.model, "max_ring_length", 6), atom_decoder
+            )
+        if projector == "ring_length_at_least":
+            return RingLengthAtLeastProjector(
+                z_t, getattr(self.cfg.model, "min_ring_length", 3), atom_decoder
+            )
+        if projector in (None, ""):
+            if not hasattr(self, "_printed_no_constraint_mode"):
+                print("No constraint training - generating unrestricted graphs")
+                self._printed_no_constraint_mode = True
+            return None
+        raise ValueError(f"Projection type '{projector}' not implemented.")
+
     def _assert_final_constraint(self, final_batch):
+        if not self.use_projection:
+            return
         projector = getattr(self.cfg.model, "rev_proj", None)
         if projector not in {"ring_count_at_least", "ring_length_at_least"}:
             return
@@ -537,17 +581,23 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             )
         self.print(f"Val epoch {self.current_epoch} ends")
 
-    def on_test_epoch_start(self) -> None:
-        if self.local_rank == 0:
-            utils.setup_wandb(self.cfg)
-        # Set a different seed for each GPU (initial seed gets the seed from pl.seed_everything)
-        # torch.random.manual_seed(torch.initial_seed() + self.local_rank)
+    def _is_sampling_only(self) -> bool:
+        return bool(getattr(self.cfg.general, "sampling_only", False))
 
+    def on_test_epoch_start(self) -> None:
+        sampling_only = self._is_sampling_only()
+        if not sampling_only and self.local_rank == 0:
+            utils.setup_wandb(self.cfg)
+
+        self.test_sampling_metrics.reset()
+        if sampling_only:
+            return
         self.test_nll.reset()
         self.test_metrics.reset()
-        self.test_sampling_metrics.reset()
 
     def test_step(self, data, i):
+        if self._is_sampling_only():
+            return None
         dense_data = utils.to_dense(data, self.dataset_infos)
         z_t = self.noise_model.apply_noise(dense_data)
         pred = self.forward(z_t)
@@ -557,129 +607,194 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         return {"loss": nll}, log_dict
 
     def on_test_epoch_end(self) -> None:
-        """Measure likelihood on a test set and compute stability metrics."""
-        metrics = [self.test_nll.compute(), self.test_metrics.compute()]
-        test_nll = metrics[0]
-        self.print(f"Test loss: {test_nll :.4f}")
-        log_dict = {
-            "test/epoch_NLL": metrics[0],
-            "test/X_kl": metrics[1]["XKl"] * self.T,
-            "test/E_kl": metrics[1]["EKl"] * self.T,
-            "test/charges_kl": metrics[1]["ChargesKl"] * self.T,
+        """Evaluate a checkpoint and always finish with graph sampling metrics."""
+        sampling_only = self._is_sampling_only()
+        if not sampling_only:
+            metrics = [self.test_nll.compute(), self.test_metrics.compute()]
+            test_nll = metrics[0]
+            self.print(f"Test loss: {test_nll :.4f}")
+            log_dict = {
+                "test/epoch_NLL": metrics[0],
+                "test/X_kl": metrics[1]["XKl"] * self.T,
+                "test/E_kl": metrics[1]["EKl"] * self.T,
+                "test/charges_kl": metrics[1]["ChargesKl"] * self.T,
+            }
+            self.log_dict(log_dict, sync_dist=True)
+
+            print_str = []
+            for key, val in log_dict.items():
+                print_str.append(f"{key}: {val:.4f} -- ")
+            print(f"Epoch {self.current_epoch}: {''.join(print_str)}."[:-4])
+
+            if wandb.run:
+                wandb.log(log_dict)
+
+        self._run_final_sampling(sampling_only=sampling_only)
+
+        if not sampling_only:
+            wandb.finish()
+
+    def _constraint_target(self):
+        projector = getattr(self.cfg.model, "rev_proj", None)
+        threshold_attributes = {
+            "ring_count_at_most": "max_rings",
+            "ring_length_at_most": "max_ring_length",
+            "ring_count_at_least": "min_rings",
+            "ring_length_at_least": "min_ring_length",
         }
-        self.log_dict(log_dict, sync_dist=True)
+        threshold_attr = threshold_attributes.get(projector)
+        threshold = (
+            getattr(self.cfg.model, threshold_attr, None)
+            if threshold_attr is not None
+            else None
+        )
+        return projector, threshold
 
-        print_str = []
-        for key, val in log_dict.items():
-            new_val = f"{val:.4f}"
-            print_str.append(f"{key}: {new_val} -- ")
-        print_str = "".join(print_str)
-        print(f"Epoch {self.current_epoch}: {print_str}."[:-4])
+    @staticmethod
+    def _json_ready(value):
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu()
+            return value.item() if value.numel() == 1 else value.tolist()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, dict):
+            return {
+                str(key): DiscreteDenoisingDiffusion._json_ready(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [DiscreteDenoisingDiffusion._json_ready(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if hasattr(value, "to_json"):
+            return DiscreteDenoisingDiffusion._json_ready(value.to_json())
+        return str(value)
 
-        if wandb.run:
-            wandb.log(log_dict)
+    @staticmethod
+    def _write_samples_text(samples, filename):
+        with open(filename, "w") as handle:
+            for batch in samples:
+                num_nodes = batch.node_mask.sum(dim=-1)
+                for graph_index in range(batch.X.shape[0]):
+                    n = num_nodes[graph_index].item()
+                    handle.write(f"N={n}\n")
+                    handle.write("X: \n")
+                    for node in batch.X[graph_index, :n].tolist():
+                        handle.write(f"{node} ")
+                    handle.write("\n")
+                    if batch.charges is not None:
+                        handle.write("charges: \n")
+                        for charge in batch.charges[graph_index, :n].tolist():
+                            handle.write(f"{charge} ")
+                        handle.write("\n")
+                    handle.write("E: \n")
+                    for edge_types in batch.E[graph_index, :n, :n].tolist():
+                        for edge in edge_types:
+                            handle.write(f"{edge} ")
+                        handle.write("\n")
+                    handle.write("\n")
 
+    def _run_final_sampling(self, sampling_only: bool) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] Sampling start on GR{self.global_rank}")
         start = time.time()
-        to_sample = math.ceil(
-            self.cfg.general.final_model_samples_to_generate
-            / max(self._trainer.num_devices, 1)
-        )
+
+        if sampling_only:
+            rank = int(self.global_rank)
+            world_size = int(self.trainer.world_size)
+            output_dir = os.path.abspath(str(self.cfg.general.sampling_output_dir))
+        else:
+            rank = int(self.local_rank)
+            world_size = max(int(self._trainer.num_devices), 1)
+            output_dir = os.getcwd()
+        os.makedirs(output_dir, exist_ok=True)
+
+        requested_samples = int(self.cfg.general.final_model_samples_to_generate)
+        samples_per_rank = math.ceil(requested_samples / max(world_size, 1))
         self.print(
-            f"Samples to generate: {to_sample} for each of the {max(self._trainer.num_devices, 1)} devices"
+            f"Samples to generate: {samples_per_rank} for each of the {world_size} devices"
         )
         self.print(f"Samples to save: {self.cfg.general.final_model_samples_to_save}")
         samples = self.sample_n_graphs(
-            samples_to_generate=to_sample,
+            samples_to_generate=samples_per_rank,
             chains_to_save=self.cfg.general.final_model_chains_to_save,
             samples_to_save=self.cfg.general.final_model_samples_to_save,
             test=True,
         )
-        
-        # Save the samples list as pickle to a file that depends on the local rank
-        # This is needed to avoid overwriting the same file on different GPUs
-        with open(f"generated_samples_rank{self.local_rank}.pkl", "wb") as f:
-            pickle.dump(samples, f)
 
-        print("Saving the generated graphs")
-        # This line is used to sync between gpus
+        pickle_path = os.path.join(output_dir, f"generated_samples_rank{rank}.pkl")
+        with open(pickle_path, "wb") as handle:
+            pickle.dump(samples, handle)
+
+        if not sampling_only:
+            self._write_samples_text(
+                samples,
+                os.path.join(output_dir, f"generated_samples_rank{rank}.txt"),
+            )
+
         self._trainer.strategy.barrier()
-        filename = f"generated_samples_rank{self.local_rank}.txt"
-        with open(filename, "w") as f:
-            for batch in samples:
-                num_nodes = batch.node_mask.sum(dim=-1)
-                for i in range(batch.X.shape[0]):
-                    n = num_nodes[i].item()
-                    f.write(f"N={n}\n")
-                    # X:
-                    f.write("X: \n")
-                    for node in batch.X[i, :n].tolist():
-                        f.write(f"{node} ")
-                    f.write("\n")
+        print("Computing final sampling metrics...")
 
-                    # Charges
-                    if batch.charges is not None:
-                        f.write("charges: \n")
-                        for c in batch.charges[i, :n].tolist():
-                            f.write(f"{c} ")
-                        f.write("\n")
+        all_samples = []
+        for rank_index in range(world_size):
+            rank_path = os.path.join(
+                output_dir, f"generated_samples_rank{rank_index}.pkl"
+            )
+            with open(rank_path, "rb") as handle:
+                all_samples.extend(pickle.load(handle))
 
-                    # E
-                    f.write("E: \n")
-                    for edge_types in batch.E[i, :n, :n].tolist():
-                        for edge in edge_types:
-                            f.write(f"{edge} ")
-                        f.write("\n")
-                    f.write("\n")
-        print("Saved.")
-        print("📊 Computing final sampling metrics...")
+        constraint_type, constraint_value = self._constraint_target()
+        if constraint_type:
+            self.dataset_infos.constraint_type = constraint_type
+            self.dataset_infos.constraint_value = constraint_value
+            print(
+                f"[CONSTRAINT TARGET] Type: {constraint_type}, "
+                f"Value: {constraint_value}, projection: {self.use_projection}"
+            )
 
-        # Load the pickles of the other GPUs
-        samples = []
-        for i in range(self._trainer.num_devices):
-            with open(f"generated_samples_rank{i}.pkl", "rb") as f:
-                samples.extend(pickle.load(f))
-
-        # Pass constraint information to sampling metrics for violation tracking
-        if hasattr(self, 'dataset_infos'):
-            # Extract constraint info from config
-            constraint_type = None
-            constraint_value = None
-            
-            # Check for ring constraints in the model config.
-            if hasattr(self.cfg.model, 'rev_proj'):
-                if self.cfg.model.rev_proj == 'ring_count_at_most':
-                    constraint_type = 'ring_count_at_most'
-                    constraint_value = getattr(self.cfg.model, 'max_rings', None)
-                elif self.cfg.model.rev_proj == 'ring_length_at_most':
-                    constraint_type = 'ring_length_at_most'
-                    constraint_value = getattr(self.cfg.model, 'max_ring_length', None)
-                elif self.cfg.model.rev_proj == 'ring_count_at_least':
-                    constraint_type = 'ring_count_at_least'
-                    constraint_value = getattr(self.cfg.model, 'min_rings', None)
-                elif self.cfg.model.rev_proj == 'ring_length_at_least':
-                    constraint_type = 'ring_length_at_least'
-                    constraint_value = getattr(self.cfg.model, 'min_ring_length', None)
-            
-            # Set constraint info in dataset_infos for reporting metadata.
-            if constraint_type and constraint_value is not None:
-                self.dataset_infos.constraint_type = constraint_type
-                self.dataset_infos.constraint_value = constraint_value
-                print(f"[CONSTRAINT INFO] Type: {constraint_type}, Value: {constraint_value}")
-
-        self.test_sampling_metrics.compute_all_metrics(
-            generated_graphs=samples,
+        metric_result = self.test_sampling_metrics.compute_all_metrics(
+            generated_graphs=all_samples,
             current_epoch=self.current_epoch,
             local_rank=self.local_rank,
+            log_to_wandb=not sampling_only,
         )
-        # Setup additional logging and log the completion message
-        additional_logger = setup_additional_logging()
-        log_and_print(f"Done. Sampling took {time.time() - start:.2f} seconds\n", additional_logger)
-        log_and_print(f"Test ends.", additional_logger)
+        metric_values = metric_result[0] if isinstance(metric_result, tuple) else metric_result
+        elapsed = time.time() - start
 
-        # Close wandb
-        wandb.finish()
+        if sampling_only and self.global_rank == 0:
+            generated_samples = sum(
+                int(batch.X.shape[0]) for batch in all_samples
+            )
+            payload = {
+                "metadata": {
+                    "checkpoint": os.path.abspath(str(self.cfg.general.test_only)),
+                    "seed": int(self.cfg.train.seed),
+                    "dataset": str(self.cfg.dataset.name),
+                    "constraint": {
+                        "type": constraint_type,
+                        "value": constraint_value,
+                    },
+                    "projection_enabled": self.use_projection,
+                    "requested_samples": requested_samples,
+                    "generated_samples": generated_samples,
+                    "device_count": world_size,
+                    "sampling_seconds": elapsed,
+                    "faster_sampling": int(self.cfg.general.faster_sampling),
+                },
+                "metrics": self._json_ready(metric_values),
+            }
+            metrics_path = os.path.join(output_dir, "sampling_metrics.json")
+            with open(metrics_path, "w") as handle:
+                json.dump(payload, handle, indent=2, sort_keys=True)
+            print(f"Sampling artifacts saved to {output_dir}")
+
+        additional_logger = setup_additional_logging()
+        log_and_print(
+            f"Done. Sampling took {elapsed:.2f} seconds\n", additional_logger
+        )
+        log_and_print("Test ends.", additional_logger)
 
     def kl_prior(self, clean_data, node_mask):
         """Computes the KL between q(z1 | x) and the prior p(z1) = Normal(0, 1).
@@ -891,47 +1006,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         z_t = z_T
 
-        # Create planarity or other constraint preserving objects
-        if self.cfg.model.rev_proj == "planar":
-            rev_projector = PlanarProjector(z_t)
-        elif self.cfg.model.rev_proj == "tree":
-            rev_projector = TreeProjector(z_t)
-        elif self.cfg.model.rev_proj == "lobster":
-            rev_projector = LobsterProjector(z_t)
-        elif self.cfg.model.rev_proj == "ring_count_at_most":
-            max_rings = getattr(self.cfg.model, "max_rings", 0)
-            atom_decoder = getattr(self.dataset_infos, "atom_decoder", None)
-            if not hasattr(self, '_printed_ring_count_mode'):
-                # print(f"🔧 RingCountAtMostProjector: max_rings={max_rings}")
-                self._printed_ring_count_mode = True
-            rev_projector = RingCountAtMostProjector(z_t, max_rings, atom_decoder)
-        elif self.cfg.model.rev_proj == "ring_count_at_least":
-            min_rings = getattr(self.cfg.model, "min_rings", 1)
-            atom_decoder = getattr(self.dataset_infos, "atom_decoder", None)
-            rev_projector = RingCountAtLeastProjector(z_t, min_rings, atom_decoder)
-        elif self.cfg.model.rev_proj == "ring_length_at_most":
-            max_ring_length = getattr(self.cfg.model, "max_ring_length", 6)
-            atom_decoder = getattr(self.dataset_infos, "atom_decoder", None)
-            if not hasattr(self, '_printed_ring_length_mode'):
-                # print(f"🔧 RingLengthAtMostProjector: max_ring_length={max_ring_length}")
-                self._printed_ring_length_mode = True
-            rev_projector = RingLengthAtMostProjector(z_t, max_ring_length, atom_decoder)
-        elif self.cfg.model.rev_proj == "ring_length_at_least":
-            min_ring_length = getattr(self.cfg.model, "min_ring_length", 3)
-            atom_decoder = getattr(self.dataset_infos, "atom_decoder", None)
-            rev_projector = RingLengthAtLeastProjector(
-                z_t, min_ring_length, atom_decoder
-            )
-        elif self.cfg.model.rev_proj is None or self.cfg.model.rev_proj == "":
-            # No constraint training - no projector needed
-            rev_projector = None
-            if not hasattr(self, '_printed_no_constraint_mode'):
-                print(f"🔧 No constraint training - generating unrestricted graphs")
-                self._printed_no_constraint_mode = True
-        else:
-            raise ValueError(
-                f"Projection type '{self.cfg.model.rev_proj}' not implemented."
-            )
+        # Create a constraint-preserving object only when projection is enabled.
+        rev_projector = self._build_reverse_projector(z_t)
 
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
         
@@ -955,7 +1031,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             projection_time = 0.0
 
             # Constraint preserving (if any constraint is specified)
-            if self.cfg.model.rev_proj and rev_projector is not None:
+            if self.use_projection and self.cfg.model.rev_proj and rev_projector is not None:
                 # Set current timestep for logging
                 rev_projector.current_timestep = s_int
                 

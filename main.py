@@ -24,8 +24,33 @@ torch.cuda.empty_cache()
 warnings.filterwarnings("ignore", category=PossibleUserWarning)
 
 
+def validate_sampling_only_config(cfg: DictConfig) -> None:
+    """Fail fast on ambiguous or unsupported sampling-only configurations."""
+    if not getattr(cfg.general, "sampling_only", False):
+        return
+    if not cfg.general.test_only:
+        raise ValueError(
+            "general.sampling_only=true requires general.test_only to point to a checkpoint."
+        )
+    if cfg.general.resume:
+        raise ValueError(
+            "general.resume cannot be used with general.sampling_only=true; "
+            "use general.test_only for the checkpoint."
+        )
+    if cfg.general.evaluate_all_checkpoints:
+        raise ValueError(
+            "general.evaluate_all_checkpoints=true is incompatible with sampling-only mode; "
+            "run one checkpoint per invocation."
+        )
+    if hasattr(cfg.model, "is_baseline"):
+        raise ValueError(
+            "Sampling-only checkpoint mode is not supported for baseline models."
+        )
+
+
 @hydra.main(version_base="1.3", config_path="./configs", config_name="config")
 def main(cfg: DictConfig):
+    validate_sampling_only_config(cfg)
     pl.seed_everything(cfg.train.seed)
     dataset_config = cfg.dataset
 
@@ -168,9 +193,16 @@ def main(cfg: DictConfig):
             callbacks=callbacks,
             log_every_n_steps=1 if is_debug_run else 50,
             logger=[],
+            limit_test_batches=(
+                1 if getattr(cfg.general, "sampling_only", False) else 1.0
+            ),
         )
 
-        if not cfg.general.test_only:
+        if getattr(cfg.general, "sampling_only", False):
+            trainer.test(
+                model, datamodule=datamodule, ckpt_path=cfg.general.test_only
+            )
+        elif not cfg.general.test_only:
             trainer.fit(model, datamodule=datamodule, ckpt_path=cfg.general.resume)
             # Test the checkpoint selected by validation NLL, not the final
             # in-memory weights. Runs without checkpointing retain old behavior.

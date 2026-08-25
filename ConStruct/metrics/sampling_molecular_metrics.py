@@ -389,6 +389,10 @@ class SamplingMolecularMetrics(nn.Module):
                 "min_ring_length": getattr(self.cfg.model, 'min_ring_length', None),
             }
             constraint_str = constraint_caption(kind, constraint_meta)
+            if kind != "none" and not bool(
+                getattr(self.cfg.model, "use_projection", True)
+            ):
+                constraint_str += " (projection disabled; evaluation target only)"
             
             # New (STRUCTURAL, projector-consistent)
             ring_count_counts, ring_length_counts = self.collect_structural_distributions_from_graphs(generated_graphs)
@@ -445,7 +449,14 @@ class SamplingMolecularMetrics(nn.Module):
                 timing_dict["wall_clock_hhmm"] = f"{hours:02d}:{minutes:02d}"
             
             # Check if this is a no-constraint experiment and set appropriate defaults
-            if hasattr(self, 'cfg') and self.cfg and (getattr(self.cfg.model, 'rev_proj', None) is None or getattr(self.cfg.model, 'rev_proj', '') == ''):
+            if (
+                hasattr(self, "cfg")
+                and self.cfg
+                and (
+                    not bool(getattr(self.cfg.model, "use_projection", True))
+                    or getattr(self.cfg.model, "rev_proj", None) in (None, "")
+                )
+            ):
                 # No constraint experiment - set projection metrics to indicate no projection
                 timing_dict["proj_ms_mean"] = 0.0  # No projection time
                 timing_dict["proj_share_pct"] = 0.0  # No projection share
@@ -472,12 +483,12 @@ class SamplingMolecularMetrics(nn.Module):
             print("• **FCD** — Fréchet ChemNet Distance computed on valid canonical SMILES; lower is better")
             print("• **Unique/Novel/Valid** — proportions computed over all generated molecules (not only valid)")
             print("• **Disconnected** — share of graphs with >1 connected component")
-            print("• **Property satisfied** — share of generated graphs meeting the enforced structural constraint")
+            print("• **Property satisfied** — share of generated graphs meeting the configured structural target")
             print("• **V.U.N.** — product of Valid × Unique × Novel (in [0,100]%)")
             print()
             
-            # Add WandB logging information
-            print("🔍 **LOGGING TO WANDB**:")
+            # Display the metric payload independently of the configured logger.
+            print("🔍 **SAMPLING METRICS**:")
             print("=" * 60)
             for key, value in metrics_to_pass.items():
                 if key.startswith(f"{split}_sampling/"):

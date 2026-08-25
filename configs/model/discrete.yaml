@@ -5,6 +5,7 @@ n_layers: 5
 
 # Constraint settings (ConStruct philosophy)
 rev_proj: null  # planar, tree, lobster, ring_count_at_most, ring_count_at_least, ring_length_at_most, ring_length_at_least
+use_projection: true  # Disable to measure the configured constraint without enforcing it during reverse sampling
 
 # Edge-deletion constraints (use with absorbing_edges transition)
 max_rings: 0     # For ring_count_at_most: maximum number of rings allowed
