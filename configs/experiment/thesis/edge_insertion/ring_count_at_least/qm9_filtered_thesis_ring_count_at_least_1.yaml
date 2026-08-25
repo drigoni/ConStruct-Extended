@@ -1,0 +1,47 @@
+# @package _global_
+defaults:
+  - override /dataset: qm9_filtered
+
+general:
+  name: 'qm9_filtered_thesis_ring_count_at_least_1'
+  # Validate every 10 epochs and compute validity at every validation.
+  check_val_every_n_epochs: 10
+  sample_every_val: 1
+  samples_to_generate: 1024
+  final_model_samples_to_generate: 10000
+  evaluate_all_checkpoints: false
+
+model:
+  diffusion_steps: 500
+  n_layers: 4
+  hidden_mlp_dims:
+    X: 128
+    E: 128
+    y: 128
+  hidden_dims:
+    dx: 128
+    de: 128
+    dy: 128
+    n_head: 4
+    dim_ffX: 256
+    dim_ffE: 256
+    dim_ffy: 256
+  min_rings: 1
+  rev_proj: ring_count_at_least
+  transition: edge_insertion
+
+train:
+  n_epochs: 1200
+  batch_size: 128
+  lr: 0.0001
+  early_stopping:
+    enable: true
+    monitor: val/epoch_NLL
+    patience: 30
+    min_delta: 0.00005
+    mode: min
+    check_finite: true
+    stopping_threshold: null
+    divergence_threshold: 300.0
+    check_on_train_epoch_end: false
+    min_epochs: 400

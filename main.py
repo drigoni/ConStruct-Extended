@@ -53,7 +53,7 @@ def main(cfg: DictConfig):
         datamodule = protein_dataset.ProteinDataModule(cfg)
         dataset_infos = protein_dataset.ProteinInfos(datamodule=datamodule)
 
-    elif dataset_config.name == "qm9":
+    elif dataset_config.name in ["qm9", "qm9_filtered"]:
         from ConStruct.datasets.qm9_dataset import QM9DataModule, QM9Infos
 
         datamodule = QM9DataModule(cfg)
@@ -156,7 +156,13 @@ def main(cfg: DictConfig):
             accelerator="gpu" if use_gpu else "cpu",
             devices=-1 if use_gpu else 1,
             max_epochs=cfg.train.n_epochs,
+            min_epochs=(
+                cfg.train.early_stopping.min_epochs
+                if cfg.train.early_stopping.enable
+                else None
+            ),
             check_val_every_n_epoch=cfg.general.check_val_every_n_epochs,
+            num_sanity_val_steps=0,
             fast_dev_run=is_debug_run,
             enable_progress_bar=False,
             callbacks=callbacks,
@@ -166,8 +172,10 @@ def main(cfg: DictConfig):
 
         if not cfg.general.test_only:
             trainer.fit(model, datamodule=datamodule, ckpt_path=cfg.general.resume)
-            # if cfg.general.name not in ["debug", "test"]:
-            trainer.test(model, datamodule=datamodule)
+            # Test the checkpoint selected by validation NLL, not the final
+            # in-memory weights. Runs without checkpointing retain old behavior.
+            test_ckpt_path = "best" if cfg.train.save_model else None
+            trainer.test(model, datamodule=datamodule, ckpt_path=test_ckpt_path)
         else:
             # Start by evaluating test_only_path
             for i in range(5):

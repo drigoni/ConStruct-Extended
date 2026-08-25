@@ -9,6 +9,7 @@ from rdkit import Chem, RDLogger
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
+import networkx as nx
 from torch_geometric.data import InMemoryDataset, download_url, extract_zip
 from hydra.utils import get_original_cwd
 
@@ -29,6 +30,50 @@ from ConStruct.datasets.dataset_utils import (
 )
 from ConStruct.metrics.metrics_utils import compute_all_statistics
 import fcd
+
+from ConStruct.projector.graph_cycles import (
+    max_ring_length_exceeds,
+    simple_cycle_count_exceeds,
+)
+
+
+SUPPORTED_STRUCTURE_FILTERS = {"ring_count", "max_cycle_length"}
+SUPPORTED_STRUCTURE_FILTER_MODES = {"at_least", "at_most"}
+
+
+def molecule_matches_structure_filter(mol, characteristic, mode, value):
+    """Return whether an RDKit molecule satisfies a structural cycle filter."""
+    if characteristic is None:
+        return True
+    if characteristic not in SUPPORTED_STRUCTURE_FILTERS:
+        raise ValueError(
+            f"Unsupported QM9 filter characteristic '{characteristic}'. "
+            f"Choose one of {sorted(SUPPORTED_STRUCTURE_FILTERS)}."
+        )
+    if mode not in SUPPORTED_STRUCTURE_FILTER_MODES:
+        raise ValueError(
+            f"Unsupported QM9 filter mode '{mode}'. "
+            f"Choose one of {sorted(SUPPORTED_STRUCTURE_FILTER_MODES)}."
+        )
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError("QM9 structure filter value must be a non-negative integer.")
+
+    graph = nx.Graph()
+    graph.add_nodes_from(range(mol.GetNumAtoms()))
+    graph.add_edges_from(
+        (bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()) for bond in mol.GetBonds()
+    )
+
+    if characteristic == "ring_count":
+        if mode == "at_least":
+            return value == 0 or simple_cycle_count_exceeds(graph, value - 1)
+        return not simple_cycle_count_exceeds(graph, value)
+
+    if mode == "at_least":
+        if value == 0:
+            return True
+        return max_ring_length_exceeds(graph, value - 1)
+    return not max_ring_length_exceeds(graph, value)
 
 
 class RemoveYTransform:
@@ -66,6 +111,10 @@ class QM9Dataset(InMemoryDataset):
         transform=None,
         pre_transform=None,
         pre_filter=None,
+        source_root=None,
+        filter_characteristic=None,
+        filter_mode=None,
+        filter_value=None,
     ):
         self.split = split
         if self.split == "train":
@@ -76,6 +125,19 @@ class QM9Dataset(InMemoryDataset):
             self.file_idx = 2
         self.remove_h = remove_h
         self.target_prop = target_prop
+        self.source_root = source_root
+        self.filter_characteristic = filter_characteristic
+        self.filter_mode = filter_mode
+        self.filter_value = filter_value
+
+        if self.filter_characteristic is not None:
+            # Validate before PyG checks whether processing is needed.
+            molecule_matches_structure_filter(
+                Chem.MolFromSmiles("C"),
+                self.filter_characteristic,
+                self.filter_mode,
+                self.filter_value,
+            )
 
         self.atom_encoder = atom_encoder
         if remove_h:
@@ -102,6 +164,20 @@ class QM9Dataset(InMemoryDataset):
             self.mu_fcd, self.sigma_fcd = fcd_stats["mu_fcd"], fcd_stats["sigma_fcd"]
 
     @property
+    def raw_dir(self):
+        # A filtered dataset owns separate processed files while reusing the
+        # immutable raw QM9 source. This avoids downloading or modifying QM9.
+        if self.source_root is not None:
+            return osp.join(self.source_root, "raw")
+        return super().raw_dir
+
+    @property
+    def filter_suffix(self):
+        if self.filter_characteristic is None:
+            return ""
+        return f"_{self.filter_characteristic}_{self.filter_mode}_{self.filter_value}"
+
+    @property
     def raw_file_names(self):
         return ["gdb9.sdf", "gdb9.sdf.csv", "uncharacterized.txt"]
 
@@ -119,41 +195,20 @@ class QM9Dataset(InMemoryDataset):
     @property
     def processed_file_names(self):
         h = "noh" if self.remove_h else "h"
-        if self.split == "train":
-            return [
-                f"train_{h}.pt",
-                f"train_n_{h}.pickle",
-                f"train_atom_types_{h}.npy",
-                f"train_bond_types_{h}.npy",
-                f"train_degrees.pickle",
-                f"train_charges_{h}.npy",
-                f"train_valency_{h}.pickle",
-                f"train_smiles_{h}.pickle",
-            ]
-        elif self.split == "val":
-            return [
-                f"val_{h}.pt",
-                f"val_n_{h}.pickle",
-                f"val_atom_types_{h}.npy",
-                f"val_bond_types_{h}.npy",
-                f"val_degrees.pickle",
-                f"val_charges_{h}.npy",
-                f"val_valency_{h}.pickle",
-                f"val_smiles_{h}.pickle",
-                f"val_fcd_stats.npz",
-            ]
-        else:
-            return [
-                f"test_{h}.pt",
-                f"test_n_{h}.pickle",
-                f"test_atom_types_{h}.npy",
-                f"test_bond_types_{h}.npy",
-                f"test_degrees.pickle",
-                f"test_charges_{h}.npy",
-                f"test_valency_{h}.pickle",
-                f"test_smiles_{h}.pickle",
-                f"test_fcd_stats.npz",
-            ]
+        suffix = self.filter_suffix
+        names = [
+            f"{self.split}_{h}{suffix}.pt",
+            f"{self.split}_n_{h}{suffix}.pickle",
+            f"{self.split}_atom_types_{h}{suffix}.npy",
+            f"{self.split}_bond_types_{h}{suffix}.npy",
+            f"{self.split}_degrees{suffix}.pickle",
+            f"{self.split}_charges_{h}{suffix}.npy",
+            f"{self.split}_valency_{h}{suffix}.pickle",
+            f"{self.split}_smiles_{h}{suffix}.pickle",
+        ]
+        if self.split in ["val", "test"]:
+            names.append(f"{self.split}_fcd_stats{suffix}.npz")
+        return names
 
     def download(self):
         """
@@ -214,11 +269,22 @@ class QM9Dataset(InMemoryDataset):
         data_list = []
         all_smiles = []
         num_errors = 0
+        split_candidates = 0
+        filtered_out = 0
         for i, mol in enumerate(tqdm(suppl)):
             if i in skip or i not in target_df.index:
                 continue
+            split_candidates += 1
             if mol is None:
                 print("Molecule {} is None".format(i))
+                continue
+            if not molecule_matches_structure_filter(
+                mol,
+                self.filter_characteristic,
+                self.filter_mode,
+                self.filter_value,
+            ):
+                filtered_out += 1
                 continue
             smiles = Chem.MolToSmiles(mol, canonical=True)
             if smiles is None:
@@ -250,6 +316,13 @@ class QM9Dataset(InMemoryDataset):
         save_pickle(set(all_smiles), self.processed_paths[7])
         torch.save(self.collate(data_list), self.processed_paths[0])
         print("Number of molecules that could not be mapped to smiles: ", num_errors)
+        if self.filter_characteristic is not None:
+            print(
+                "QM9 structural filter "
+                f"{self.filter_characteristic} {self.filter_mode} {self.filter_value}: "
+                f"kept {len(data_list)}/{split_candidates} molecules in split "
+                f"'{self.split}' ({filtered_out} filtered out)."
+            )
 
         if self.split in ["val", "test"]:
             # The ones being compared in FCD
@@ -280,6 +353,21 @@ class QM9DataModule(MolecularDataModule):
         self.datadir = cfg.dataset.datadir
         base_path = pathlib.Path(get_original_cwd())
         root_path = os.path.join(base_path, self.datadir)
+        source_datadir = getattr(cfg.dataset, "source_datadir", None)
+        source_root = (
+            os.path.join(base_path, source_datadir)
+            if source_datadir is not None
+            else None
+        )
+        structure_filter = getattr(cfg.dataset, "structure_filter", None)
+        filter_kwargs = {}
+        if structure_filter is not None:
+            filter_kwargs = {
+                "source_root": source_root,
+                "filter_characteristic": structure_filter.characteristic,
+                "filter_mode": structure_filter.mode,
+                "filter_value": structure_filter.value,
+            }
 
         target = getattr(cfg.general, "guidance_target", None)
         regressor = getattr(self, "regressor", None)
@@ -300,6 +388,7 @@ class QM9DataModule(MolecularDataModule):
                 remove_h=self.cfg.dataset.remove_h,
                 target_prop=target,
                 transform=RemoveYTransform(),
+                **filter_kwargs,
             ),
             "val": QM9Dataset(
                 split="val",
@@ -307,6 +396,7 @@ class QM9DataModule(MolecularDataModule):
                 remove_h=self.cfg.dataset.remove_h,
                 target_prop=target,
                 transform=RemoveYTransform(),
+                **filter_kwargs,
             ),
             "test": QM9Dataset(
                 split="test",
@@ -314,6 +404,7 @@ class QM9DataModule(MolecularDataModule):
                 remove_h=self.cfg.dataset.remove_h,
                 target_prop=target,
                 transform=transform,
+                **filter_kwargs,
             ),
         }
         
@@ -337,7 +428,7 @@ class QM9DataModule(MolecularDataModule):
 class QM9Infos(AbstractDatasetInfos):
     def __init__(self, datamodule, cfg):
         # basic settings
-        self.name = "qm9"
+        self.name = cfg.dataset.name
         self.is_molecular = True
         self.is_tls = False
         self.remove_h = cfg.dataset.remove_h

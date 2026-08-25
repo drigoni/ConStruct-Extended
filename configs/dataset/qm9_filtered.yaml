@@ -1,0 +1,17 @@
+# Filtered copy of QM9. Raw files are reused read-only from source_datadir;
+# processed tensors and statistics are written under datadir.
+name: qm9_filtered
+remove_h: true
+source_datadir: 'data/qm9'
+datadir: 'data/qm9_filtered/ring_count_at_least_1'
+target_prop: null
+batch_size: 128
+num_workers: 4
+adaptive_loader: false
+
+# Supported characteristics: ring_count, max_cycle_length
+# Supported modes: at_least, at_most
+structure_filter:
+  characteristic: ring_count
+  mode: at_least
+  value: 1

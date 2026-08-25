@@ -197,7 +197,7 @@ def setup_wandb(cfg):
     config_dict = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
     config_dict["general"]["local_dir"] = os.getcwd()
     dataset_name = cfg.dataset["name"]
-    if dataset_name == "qm9" and not cfg.dataset.remove_h:
+    if dataset_name in ["qm9", "qm9_filtered"] and not cfg.dataset.remove_h:
         dataset_name = "qm9_h"
     kwargs = {
         "name": cfg.general.name + "-" + dataset_name,

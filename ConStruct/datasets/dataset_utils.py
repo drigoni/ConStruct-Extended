@@ -102,8 +102,10 @@ class RemoveYTransform:
 
 
 def compute_reference_metrics(dataset_infos, datamodule, cfg=None):
+    train_dataset = datamodule.train_dataloader().dataset
+    filter_suffix = getattr(train_dataset, "filter_suffix", "")
     ref_metrics_path = os.path.join(
-        datamodule.train_dataloader().dataset.processed_dir, f"ref_metrics.pkl"
+        train_dataset.processed_dir, f"ref_metrics{filter_suffix}.pkl"
     )
 
     # Only compute the reference metrics if they haven't been computed already
