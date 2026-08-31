@@ -19,6 +19,7 @@ from tabulate import tabulate
 from rdkit.Chem import AllChem
 import networkx as nx
 import pandas as pd
+from scipy import linalg
 
 from ConStruct.projector.projector_utils import build_simple_graph_from_edge_tensor
 from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique, count_simple_cycles, max_simple_cycle_length
@@ -57,6 +58,72 @@ bond_dict = [
 ATOM_VALENCY = {6: 4, 7: 3, 8: 2, 9: 1, 15: 3, 16: 2, 17: 1, 35: 1, 53: 1}
 
 RDLogger.DisableLog("rdApp.*")
+
+
+def _stable_frechet_distance(mu1, sigma1, mu2, sigma2):
+    """Compute Frechet distance using only symmetric PSD matrix operations.
+
+    ``scipy.linalg.sqrtm(sigma1 @ sigma2)``, as used by the upstream FCD
+    package, can acquire a sizeable imaginary component even when both input
+    covariance matrices are real and positive semidefinite. The similar
+    symmetric matrix ``sqrt(sigma1) @ sigma2 @ sqrt(sigma1)`` has the same
+    relevant eigenvalues and can be handled robustly with ``eigvalsh``.
+    """
+
+    mu1 = np.atleast_1d(np.asarray(mu1, dtype=np.float64))
+    mu2 = np.atleast_1d(np.asarray(mu2, dtype=np.float64))
+    sigma1 = np.atleast_2d(np.asarray(sigma1, dtype=np.float64))
+    sigma2 = np.atleast_2d(np.asarray(sigma2, dtype=np.float64))
+
+    if mu1.shape != mu2.shape:
+        raise ValueError("FCD mean vectors have different shapes")
+    if sigma1.shape != sigma2.shape or sigma1.shape != (mu1.size, mu1.size):
+        raise ValueError("FCD covariance matrices have incompatible shapes")
+    if not all(np.isfinite(value).all() for value in (mu1, mu2, sigma1, sigma2)):
+        raise ValueError("FCD inputs contain non-finite values")
+
+    def symmetric_from_eigenvalues(eigenvectors, eigenvalues):
+        # Avoid optimized BLAS matmul here. Some NumPy/OpenBLAS combinations
+        # return incorrect products for large Fortran-ordered eigenvector arrays.
+        return np.einsum(
+            "ik,k,jk->ij", eigenvectors, eigenvalues, eigenvectors, optimize=False
+        )
+
+    def matrix_product(left, right):
+        return np.einsum("ij,jk->ik", left, right, optimize=False)
+
+    def project_to_psd(matrix):
+        matrix = (matrix + matrix.T) / 2
+        eigenvalues, eigenvectors = linalg.eigh(matrix, check_finite=False)
+        eigenvalues = np.clip(eigenvalues, 0.0, None)
+        return symmetric_from_eigenvalues(eigenvectors, eigenvalues)
+
+    sigma1 = project_to_psd(sigma1)
+    sigma2 = project_to_psd(sigma2)
+    eigenvalues, eigenvectors = linalg.eigh(sigma1, check_finite=False)
+    eigenvalues = np.clip(eigenvalues, 0.0, None)
+    sqrt_sigma1 = symmetric_from_eigenvalues(
+        eigenvectors, np.sqrt(eigenvalues)
+    )
+    covariance_product = matrix_product(
+        matrix_product(sqrt_sigma1, sigma2), sqrt_sigma1
+    )
+    covariance_product = (covariance_product + covariance_product.T) / 2
+    product_eigenvalues = np.clip(
+        linalg.eigvalsh(covariance_product, check_finite=False), 0.0, None
+    )
+
+    mean_distance = np.square(mu1 - mu2).sum()
+    distance = (
+        mean_distance
+        + np.trace(sigma1)
+        + np.trace(sigma2)
+        - 2 * np.sqrt(product_eigenvalues).sum()
+    )
+    scale = max(1.0, mean_distance + np.trace(sigma1) + np.trace(sigma2))
+    if distance < -1e-8 * scale:
+        raise ValueError(f"Numerically invalid negative FCD: {distance}")
+    return float(max(distance, 0.0))
 
 
 class Molecule:
@@ -845,10 +912,14 @@ class SamplingMolecularMetrics(nn.Module):
 
         if len(generated_smiles) <= 1:
             print("Not enough (<=1) valid smiles for FCD computation.")
-            fcd_score = -1
+            fcd_score = None
         else:
             try:
-                gen_activations = fcd.get_predictions(fcd_model, generated_smiles)
+                # A worker process offers little benefit here and commonly crashes
+                # in containers/SLURM jobs with a small /dev/shm allocation.
+                gen_activations = fcd.get_predictions(
+                    fcd_model, generated_smiles, n_jobs=0
+                )
                 gen_mu = np.mean(gen_activations, axis=0)
                 gen_sigma = np.cov(gen_activations.T)
                 target_mu = self.val_fcd_mu
@@ -860,21 +931,19 @@ class SamplingMolecularMetrics(nn.Module):
                         mu2=target_mu,
                         sigma2=target_sigma,
                     )
-                except ValueError as e:
-                    eps = 1e-6
-                    print(f"Error in FCD computation: {e}. Increasing eps to {eps}")
-                    eps_sigma = eps * np.eye(gen_sigma.shape[0])
-                    gen_sigma = gen_sigma + eps_sigma
-                    target_sigma = self.val_fcd_sigma + eps_sigma
-                    fcd_score = fcd.calculate_frechet_distance(
-                        mu1=gen_mu,
-                        sigma1=gen_sigma,
-                        mu2=target_mu,
-                        sigma2=target_sigma,
+                    if not np.isfinite(fcd_score) or fcd_score < 0:
+                        raise ValueError(f"Invalid FCD value: {fcd_score}")
+                except (ValueError, FloatingPointError) as error:
+                    print(
+                        "Standard FCD covariance calculation was unstable "
+                        f"({error}); using the symmetric PSD calculation."
+                    )
+                    fcd_score = _stable_frechet_distance(
+                        gen_mu, gen_sigma, target_mu, target_sigma
                     )
             except Exception as e:
                 print(f"FCD calculation failed: {e}")
-                fcd_score = -1
+                fcd_score = None
 
         key = "val_sampling" if not self.test else "test_sampling"
         return {f"{key}/fcd score": fcd_score}

@@ -13,6 +13,10 @@ from omegaconf import OmegaConf
 
 from ConStruct.diffusion_model_discrete import DiscreteDenoisingDiffusion
 from ConStruct.metrics.sampling_metrics import SamplingMetrics
+from ConStruct.metrics.sampling_molecular_metrics import (
+    SamplingMolecularMetrics,
+    _stable_frechet_distance,
+)
 from ConStruct.utils import PlaceHolder
 from main import validate_sampling_only_config
 
@@ -267,6 +271,85 @@ class SamplingModeTests(unittest.TestCase):
                     "log_to_wandb"
                 ]
             )
+
+
+class FCDStabilityTests(unittest.TestCase):
+    def test_stable_frechet_distance_matches_diagonal_gaussians(self):
+        distance = _stable_frechet_distance(
+            np.zeros(2), np.eye(2), np.zeros(2), 4 * np.eye(2)
+        )
+        self.assertAlmostEqual(distance, 2.0)
+
+    def test_stable_frechet_distance_handles_near_singular_covariance(self):
+        covariance = np.array([[1.0, 1.0 + 1e-12], [1.0 + 1e-12, 1.0]])
+        distance = _stable_frechet_distance(
+            np.zeros(2), covariance, np.zeros(2), np.eye(2)
+        )
+        self.assertTrue(np.isfinite(distance))
+        self.assertGreaterEqual(distance, 0.0)
+
+    def test_stable_frechet_distance_handles_high_dimension(self):
+        rng = np.random.default_rng(7)
+        left = rng.normal(size=(128, 128))
+        right = rng.normal(size=(128, 128))
+        distance = _stable_frechet_distance(
+            np.zeros(128),
+            np.einsum("ik,jk->ij", left, left, optimize=False) / 128,
+            np.zeros(128),
+            np.einsum("ik,jk->ij", right, right, optimize=False) / 128,
+        )
+        self.assertTrue(np.isfinite(distance))
+        self.assertGreaterEqual(distance, 0.0)
+
+    def test_fcd_disables_workers_and_falls_back_to_psd_calculation(self):
+        harness = SimpleNamespace(
+            test=True,
+            val_fcd_mu=np.zeros(2),
+            val_fcd_sigma=np.eye(2),
+        )
+        activations = np.array([[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]])
+
+        with mock.patch(
+            "ConStruct.metrics.sampling_molecular_metrics.fcd.load_ref_model",
+            return_value=object(),
+        ), mock.patch(
+            "ConStruct.metrics.sampling_molecular_metrics.fcd.get_predictions",
+            return_value=activations,
+        ) as predictions, mock.patch(
+            "ConStruct.metrics.sampling_molecular_metrics.fcd.calculate_frechet_distance",
+            side_effect=ValueError("Imaginary component"),
+        ):
+            result = SamplingMolecularMetrics.compute_fcd(
+                harness, ["CC", "CCC", "CO"]
+            )
+
+        self.assertGreaterEqual(result["test_sampling/fcd score"], 0.0)
+        self.assertEqual(predictions.call_args.kwargs["n_jobs"], 0)
+
+    def test_invalid_cached_fcd_does_not_create_ratio_one(self):
+        harness = SimpleNamespace(
+            test=True,
+            dataset_infos=SimpleNamespace(is_molecular=True, is_tls=False),
+        )
+        ratios = SamplingMetrics.compute_ratios_to_ref(
+            harness,
+            reference_metrics={"val_sampling/fcd score": -1},
+            generated_metrics={"test_sampling/fcd score": -1},
+        )
+        self.assertIsNone(ratios["test_ratio/fcd score"])
+        self.assertIsNone(ratios["test_ratio/average"])
+
+    def test_json_ready_replaces_non_finite_numbers(self):
+        result = DiscreteDenoisingDiffusion._json_ready(
+            {
+                "nan": float("nan"),
+                "numpy": np.array([np.float64("inf")]),
+                "tensor": torch.tensor(float("nan")),
+            }
+        )
+        self.assertEqual(
+            result, {"nan": None, "numpy": [None], "tensor": None}
+        )
 
 
 if __name__ == "__main__":

@@ -316,6 +316,18 @@ class SamplingMetrics(nn.Module):
 
     def compute_ratios_to_ref(self, reference_metrics, generated_metrics):
         def compute_ratio(generated, reference):
+            # Negative FCD values in older reference caches are failure
+            # sentinels, not measurements. Missing/non-finite metrics should
+            # likewise never produce a plausible ratio.
+            if generated is None or reference is None:
+                return None
+            try:
+                if not np.isfinite(generated) or not np.isfinite(reference):
+                    return None
+            except TypeError:
+                return None
+            if generated < 0 or reference < 0:
+                return None
             # Protect against division by 0 (when ref is 0)
             return (
                 (generated / reference)
@@ -331,7 +343,10 @@ class SamplingMetrics(nn.Module):
                     generated=generated_metrics[f"{log_key}_sampling/{key}"],
                     reference=reference_metrics[f"val_sampling/{key}"],
                 )
-            ratios[f"{log_key}_ratio/average"] = sum(ratios.values()) / len(ratios)
+            valid_ratios = [value for value in ratios.values() if value is not None]
+            ratios[f"{log_key}_ratio/average"] = (
+                sum(valid_ratios) / len(valid_ratios) if valid_ratios else None
+            )
         elif self.dataset_infos.is_tls:
             # TLS entries
             tls_ratios = {}

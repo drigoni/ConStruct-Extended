@@ -654,11 +654,12 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
     def _json_ready(value):
         if isinstance(value, torch.Tensor):
             value = value.detach().cpu()
-            return value.item() if value.numel() == 1 else value.tolist()
+            converted = value.item() if value.numel() == 1 else value.tolist()
+            return DiscreteDenoisingDiffusion._json_ready(converted)
         if isinstance(value, np.ndarray):
-            return value.tolist()
+            return DiscreteDenoisingDiffusion._json_ready(value.tolist())
         if isinstance(value, np.generic):
-            return value.item()
+            return DiscreteDenoisingDiffusion._json_ready(value.item())
         if isinstance(value, dict):
             return {
                 str(key): DiscreteDenoisingDiffusion._json_ready(item)
@@ -666,6 +667,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             }
         if isinstance(value, (list, tuple)):
             return [DiscreteDenoisingDiffusion._json_ready(item) for item in value]
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
         if isinstance(value, (str, int, float, bool)) or value is None:
             return value
         if hasattr(value, "to_json"):
@@ -787,7 +790,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             }
             metrics_path = os.path.join(output_dir, "sampling_metrics.json")
             with open(metrics_path, "w") as handle:
-                json.dump(payload, handle, indent=2, sort_keys=True)
+                json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=False)
             print(f"Sampling artifacts saved to {output_dir}")
 
         additional_logger = setup_additional_logging()
