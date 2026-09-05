@@ -18,7 +18,7 @@ from ConStruct.metrics.sampling_molecular_metrics import (
     _stable_frechet_distance,
 )
 from ConStruct.utils import PlaceHolder
-from main import validate_sampling_only_config
+from main import validate_early_stopping_config, validate_sampling_only_config
 
 
 def sampling_cfg(**general_overrides):
@@ -40,6 +40,31 @@ def sampling_cfg(**general_overrides):
 
 
 class SamplingModeTests(unittest.TestCase):
+    def test_sampling_metric_early_stopping_requires_every_validation(self):
+        cfg = OmegaConf.create({
+            "general": {
+                "test_only": None,
+                "sample_every_val": 1,
+                "samples_to_generate": 1024,
+            },
+            "train": {
+                "early_stopping": {
+                    "enable": True,
+                    "monitor": "val_sampling/Validity",
+                }
+            },
+        })
+        validate_early_stopping_config(cfg)
+
+        cfg.general.sample_every_val = 2
+        with self.assertRaisesRegex(ValueError, "sample_every_val=1"):
+            validate_early_stopping_config(cfg)
+
+        cfg.general.sample_every_val = 1
+        cfg.general.samples_to_generate = 0
+        with self.assertRaisesRegex(ValueError, "positive"):
+            validate_early_stopping_config(cfg)
+
     def test_sampling_only_configuration_validation(self):
         validate_sampling_only_config(sampling_cfg())
 
@@ -133,7 +158,15 @@ class SamplingModeTests(unittest.TestCase):
                 degree_hist=[np.array([1.0])],
             ),
             test=True,
-            cfg=OmegaConf.create({"model": {"rev_proj": None}}),
+            cfg=OmegaConf.create({
+                "model": {
+                    "rev_proj": None,
+                    "constraints": [
+                        {"type": "ring_count_at_least", "min_rings": 1},
+                        {"type": "ring_length_at_least", "min_ring_length": 4},
+                    ],
+                }
+            }),
             num_nodes_w1=scalar_metric,
             node_types_tv=scalar_metric,
             edge_types_tv=scalar_metric,
@@ -145,6 +178,7 @@ class SamplingModeTests(unittest.TestCase):
             mean_lobster_components=scalar_metric,
             mean_ring_count_satisfaction=scalar_metric,
             mean_ring_length_satisfaction=scalar_metric,
+            mean_joint_constraint_satisfaction=scalar_metric,
             deg_histogram=degree_metric,
             domain_metrics=None,
         )
@@ -178,8 +212,16 @@ class SamplingModeTests(unittest.TestCase):
                 "ConStruct.metrics.sampling_metrics.lobster_components_ratio",
                 return_value=torch.tensor([1.0]),
             ),
+            mock.patch(
+                "ConStruct.metrics.sampling_metrics.ring_count_at_least_satisfaction_ratio",
+                return_value=torch.tensor([1.0]),
+            ),
+            mock.patch(
+                "ConStruct.metrics.sampling_metrics.ring_length_at_least_satisfaction_ratio",
+                return_value=torch.tensor([1.0]),
+            ),
         ]
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], mock.patch(
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], mock.patch(
             "ConStruct.metrics.sampling_metrics.wandb.run", object()
         ), mock.patch(
             "ConStruct.metrics.sampling_metrics.wandb.Histogram"
@@ -199,6 +241,9 @@ class SamplingModeTests(unittest.TestCase):
         self.assertEqual(
             metrics["test_sampling/generated_deg_hist"]["counts"], [1.0]
         )
+        self.assertEqual(metrics["test_sampling/ring_count_satisfaction"], 1.0)
+        self.assertEqual(metrics["test_sampling/ring_length_satisfaction"], 1.0)
+        self.assertEqual(metrics["test_sampling/joint_constraint_satisfaction"], 1.0)
 
     def test_sampling_artifacts_include_pickles_and_metric_metadata(self):
         with tempfile.TemporaryDirectory() as output_dir:
@@ -261,6 +306,10 @@ class SamplingModeTests(unittest.TestCase):
             self.assertFalse(payload["metadata"]["projection_enabled"])
             self.assertEqual(payload["metadata"]["seed"], 17)
             self.assertEqual(payload["metadata"]["generated_samples"], 1)
+            self.assertEqual(
+                payload["metadata"]["constraints"],
+                [{"type": "ring_count_at_most", "max_rings": 1}],
+            )
             self.assertEqual(
                 payload["metrics"]["test_sampling/generated_deg_hist"]["counts"],
                 [1.0],

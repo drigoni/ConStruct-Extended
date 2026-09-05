@@ -52,7 +52,9 @@ from ConStruct.projector.projector_utils import (
     RingLengthAtMostProjector,
     RingCountAtLeastProjector,
     RingLengthAtLeastProjector,
+    JointAtLeastProjector,
 )
+from ConStruct.projector.constraints import constraints_metadata, resolve_constraints
 from networkx.algorithms import isomorphism as iso
 from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique, count_simple_cycles, max_simple_cycle_length
 
@@ -75,6 +77,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         self.cfg = cfg
         self.name = cfg.general.name
         self.use_projection = bool(getattr(cfg.model, "use_projection", True))
+        self.constraints = resolve_constraints(cfg.model)
         self.T = cfg.model.diffusion_steps
 
         self.nodes_dist = dataset_infos.nodes_dist
@@ -204,7 +207,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # ===== TRANSITION-PROJECTOR VALIDATION =====
         # Ensure proper combinations of transitions and projectors
         # This prevents mixing incompatible mechanisms
-        if hasattr(cfg.model, 'rev_proj') and cfg.model.rev_proj:
+        if self.constraints:
             self._validate_transition_projector_compatibility(cfg)
 
         self.min_sampling_nodes = self._minimum_feasible_sampling_nodes()
@@ -227,7 +230,6 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         Edge-deletion and edge-insertion can coexist without conflicts.
         """
         transition = cfg.model.transition
-        rev_proj = cfg.model.rev_proj
         
         # Edge-deletion transitions should use "at most" projectors
         edge_deletion_transitions = ["absorbing_edges"]
@@ -240,18 +242,22 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         marginal_transitions = ["marginal", "uniform", "absorbing"]
         
         # Only warn about potentially incompatible combinations, don't raise errors
-        if transition in edge_deletion_transitions and rev_proj in at_least_projectors:
-            logger.warning(
-                "Edge-deletion transition '%s' is usually paired with an 'at most' projector, got '%s'.",
-                transition,
-                rev_proj,
-            )
-
-        if transition in edge_insertion_transitions and rev_proj in at_most_projectors:
-            logger.warning(
-                "Edge-insertion transition '%s' is usually paired with an 'at least' projector, got '%s'.",
-                transition,
-                rev_proj,
+        for constraint in self.constraints:
+            if transition in edge_deletion_transitions and constraint.type in at_least_projectors:
+                logger.warning(
+                    "Edge-deletion transition '%s' is usually paired with an 'at most' projector, got '%s'.",
+                    transition,
+                    constraint.type,
+                )
+            if transition in edge_insertion_transitions and constraint.type in at_most_projectors:
+                logger.warning(
+                    "Edge-insertion transition '%s' is usually paired with an 'at least' projector, got '%s'.",
+                    transition,
+                    constraint.type,
+                )
+        if len(self.constraints) > 1 and transition != "edge_insertion":
+            raise ValueError(
+                "Composed at-least constraints require model.transition=edge_insertion."
             )
         
         # Log successful validation (commented for clean output)
@@ -264,37 +270,37 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
     def _minimum_feasible_sampling_nodes(self):
         """Return the minimum node count needed by an active lower-bound constraint."""
-        projector = getattr(self.cfg.model, "rev_proj", None)
-        if projector == "ring_length_at_least":
-            min_nodes = int(getattr(self.cfg.model, "min_ring_length", 3))
-            if min_nodes < 3:
-                raise ValueError("model.min_ring_length must be at least 3.")
-        elif projector == "ring_count_at_least":
-            min_rings = int(getattr(self.cfg.model, "min_rings", 1))
-            if min_rings < 0:
-                raise ValueError("model.min_rings must be non-negative.")
-            if min_rings == 0:
-                return None
-            from ConStruct.projector.is_ring.is_ring_count_at_least import (
-                has_at_least_n_rings,
-            )
-
-            supported_sizes = torch.nonzero(self.nodes_dist.prob > 0).flatten().tolist()
-            min_nodes = next(
-                (
-                    n
-                    for n in supported_sizes
-                    if has_at_least_n_rings(nx.complete_graph(n), min_rings)
-                ),
-                None,
-            )
-            if min_nodes is None:
-                raise ValueError(
-                    f"The dataset node-count distribution cannot satisfy "
-                    f"ring_count_at_least={min_rings}."
+        minimums = []
+        supported_sizes = torch.nonzero(self.nodes_dist.prob > 0).flatten().tolist()
+        for constraint in self.constraints:
+            if constraint.type == "ring_length_at_least":
+                minimums.append(int(constraint.value))
+            elif constraint.type == "ring_count_at_least":
+                min_rings = int(constraint.value)
+                if min_rings == 0:
+                    continue
+                from ConStruct.projector.is_ring.is_ring_count_at_least import (
+                    has_at_least_n_rings,
                 )
-        else:
+
+                min_nodes = next(
+                    (
+                        n
+                        for n in supported_sizes
+                        if has_at_least_n_rings(nx.complete_graph(n), min_rings)
+                    ),
+                    None,
+                )
+                if min_nodes is None:
+                    raise ValueError(
+                        f"The dataset node-count distribution cannot satisfy "
+                        f"ring_count_at_least={min_rings}."
+                    )
+                minimums.append(min_nodes)
+
+        if not minimums:
             return None
+        min_nodes = max(minimums)
 
         if self.nodes_dist.prob[min_nodes:].sum() <= 0:
             raise ValueError(
@@ -302,6 +308,11 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 f"minimum feasible size n={min_nodes}."
             )
         return min_nodes
+
+    def _active_constraints(self):
+        """Resolve constraints lazily for lightweight test/model harnesses."""
+        self.constraints = resolve_constraints(self.cfg.model)
+        return self.constraints
 
     def _build_reverse_projector(self, z_t):
         """Build the configured projector only when enforcement is enabled."""
@@ -311,7 +322,17 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 self._printed_projection_disabled = True
             return None
 
-        projector = self.cfg.model.rev_proj
+        constraints = self._active_constraints()
+        if len(constraints) == 2:
+            values = {spec.type: int(spec.value) for spec in constraints}
+            return JointAtLeastProjector(
+                z_t,
+                min_rings=values["ring_count_at_least"],
+                min_ring_length=values["ring_length_at_least"],
+                atom_decoder=getattr(self.dataset_infos, "atom_decoder", None),
+            )
+
+        projector = constraints[0].type if constraints else None
         if projector == "planar":
             return PlanarProjector(z_t)
         if projector == "tree":
@@ -326,7 +347,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             )
         if projector == "ring_count_at_least":
             return RingCountAtLeastProjector(
-                z_t, getattr(self.cfg.model, "min_rings", 1), atom_decoder
+                z_t, int(constraints[0].value), atom_decoder
             )
         if projector == "ring_length_at_most":
             return RingLengthAtMostProjector(
@@ -334,7 +355,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             )
         if projector == "ring_length_at_least":
             return RingLengthAtLeastProjector(
-                z_t, getattr(self.cfg.model, "min_ring_length", 3), atom_decoder
+                z_t, int(constraints[0].value), atom_decoder
             )
         if projector in (None, ""):
             if not hasattr(self, "_printed_no_constraint_mode"):
@@ -346,8 +367,11 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
     def _assert_final_constraint(self, final_batch):
         if not self.use_projection:
             return
-        projector = getattr(self.cfg.model, "rev_proj", None)
-        if projector not in {"ring_count_at_least", "ring_length_at_least"}:
+        constraints = [
+            spec for spec in self._active_constraints()
+            if spec.type in {"ring_count_at_least", "ring_length_at_least"}
+        ]
+        if not constraints:
             return
 
         from ConStruct.projector.projector_utils import build_simple_graph_from_edge_tensor
@@ -360,16 +384,18 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             zip(final_batch.E, final_batch.node_mask)
         ):
             graph = build_simple_graph_from_edge_tensor(edge_mat, mask)
-            if projector == "ring_count_at_least":
-                threshold = int(self.cfg.model.min_rings)
-                valid = has_at_least_n_rings(graph, threshold)
-            else:
-                threshold = int(self.cfg.model.min_ring_length)
-                valid = has_rings_of_length_at_least(graph, threshold)
-            if not valid:
-                raise AssertionError(
-                    f"Returned tensor graph {graph_idx} violates {projector}={threshold}."
+            for constraint in constraints:
+                threshold = int(constraint.value)
+                valid = (
+                    has_at_least_n_rings(graph, threshold)
+                    if constraint.type == "ring_count_at_least"
+                    else has_rings_of_length_at_least(graph, threshold)
                 )
+                if not valid:
+                    raise AssertionError(
+                        f"Returned tensor graph {graph_idx} violates "
+                        f"{constraint.type}={threshold}."
+                    )
 
     def forward(self, z_t):
         assert z_t.node_mask is not None
@@ -574,11 +600,27 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             )
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(f"[{timestamp}] Computing sampling metrics on {self.local_rank}...")
-            self.val_sampling_metrics.compute_all_metrics(
+            sampling_metrics, _ = self.val_sampling_metrics.compute_all_metrics(
                 generated_graphs=samples,
                 current_epoch=self.current_epoch,
                 local_rank=self.local_rank,
             )
+            lightning_sampling_metrics = {
+                key: value
+                for key, value in sampling_metrics.items()
+                if isinstance(value, (int, float, np.number))
+                and np.isfinite(value)
+            }
+            if lightning_sampling_metrics:
+                # Register sampled validation scalars with Lightning so
+                # EarlyStopping and ModelCheckpoint can monitor them. W&B logging
+                # alone does not populate trainer.callback_metrics.
+                self.log_dict(
+                    lightning_sampling_metrics,
+                    on_step=False,
+                    on_epoch=True,
+                    sync_dist=True,
+                )
         self.print(f"Val epoch {self.current_epoch} ends")
 
     def _is_sampling_only(self) -> bool:
@@ -635,20 +677,11 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             wandb.finish()
 
     def _constraint_target(self):
-        projector = getattr(self.cfg.model, "rev_proj", None)
-        threshold_attributes = {
-            "ring_count_at_most": "max_rings",
-            "ring_length_at_most": "max_ring_length",
-            "ring_count_at_least": "min_rings",
-            "ring_length_at_least": "min_ring_length",
-        }
-        threshold_attr = threshold_attributes.get(projector)
-        threshold = (
-            getattr(self.cfg.model, threshold_attr, None)
-            if threshold_attr is not None
-            else None
-        )
-        return projector, threshold
+        constraints = self._active_constraints()
+        if len(constraints) != 1:
+            return None, None
+        constraint = constraints[0]
+        return constraint.type, constraint.value
 
     @staticmethod
     def _json_ready(value):
@@ -749,6 +782,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 all_samples.extend(pickle.load(handle))
 
         constraint_type, constraint_value = self._constraint_target()
+        active_constraints = resolve_constraints(self.cfg.model)
+        self.dataset_infos.constraints = constraints_metadata(active_constraints)
         if constraint_type:
             self.dataset_infos.constraint_type = constraint_type
             self.dataset_infos.constraint_value = constraint_value
@@ -778,7 +813,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                     "constraint": {
                         "type": constraint_type,
                         "value": constraint_value,
-                    },
+                    } if constraint_type else None,
+                    "constraints": constraints_metadata(active_constraints),
                     "projection_enabled": self.use_projection,
                     "requested_samples": requested_samples,
                     "generated_samples": generated_samples,
@@ -1034,7 +1070,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             projection_time = 0.0
 
             # Constraint preserving (if any constraint is specified)
-            if self.use_projection and self.cfg.model.rev_proj and rev_projector is not None:
+            if self.use_projection and self.constraints and rev_projector is not None:
                 # Set current timestep for logging
                 rev_projector.current_timestep = s_int
                 

@@ -24,6 +24,7 @@ from scipy import linalg
 from ConStruct.projector.projector_utils import build_simple_graph_from_edge_tensor
 from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique, count_simple_cycles, max_simple_cycle_length
 from ConStruct.projector.is_planar import is_planar
+from ConStruct.projector.constraints import resolve_constraints
 
 allowed_bonds = {
     "H": {0: 1, 1: 0, -1: 0},
@@ -58,6 +59,43 @@ bond_dict = [
 ATOM_VALENCY = {6: 4, 7: 3, 8: 2, 9: 1, 15: 3, 16: 2, 17: 1, 35: 1, 53: 1}
 
 RDLogger.DisableLog("rdApp.*")
+
+
+def compute_valid_molecules(generated):
+    """Return valid canonical SMILES using the project's existing definition."""
+    valid = []
+    all_smiles = []
+    error_message = Counter()
+    for mol in generated:
+        rdmol = mol.rdkit_mol
+        if rdmol is not None:
+            try:
+                mol_frags = Chem.rdmolops.GetMolFrags(
+                    rdmol, asMols=True, sanitizeFrags=True
+                )
+
+                # Preserve the established behavior: a disconnected graph is
+                # valid when its largest molecular fragment sanitizes.
+                if len(mol_frags) > 1:
+                    error_message[4] += 1
+                largest_mol = max(
+                    mol_frags, default=mol, key=lambda molecule: molecule.GetNumAtoms()
+                )
+                Chem.SanitizeMol(largest_mol)
+                smiles = Chem.MolToSmiles(largest_mol, canonical=True)
+                valid.append(smiles)
+                all_smiles.append(smiles)
+                error_message[-1] += 1
+            except Chem.rdchem.AtomValenceException:
+                error_message[1] += 1
+                all_smiles.append("error")
+            except Chem.rdchem.KekulizeException:
+                error_message[2] += 1
+                all_smiles.append("error")
+            except (Chem.rdchem.AtomKekulizeException, ValueError):
+                error_message[3] += 1
+                all_smiles.append("error")
+    return valid, all_smiles, error_message
 
 
 def _stable_frechet_distance(mu1, sigma1, mu2, sigma2):
@@ -293,37 +331,7 @@ class SamplingMolecularMetrics(nn.Module):
 
     def compute_validity(self, generated):
         """generated: list of couples (positions, atom_types)"""
-        valid = []
-        all_smiles = []
-        error_message = Counter()
-        for mol in generated:
-            rdmol = mol.rdkit_mol
-            if rdmol is not None:
-                try:
-                    mol_frags = Chem.rdmolops.GetMolFrags(
-                        rdmol, asMols=True, sanitizeFrags=True
-                    )
-                    
-                    # below code handles disconnected molecules by selecting the largest valid molecular fragment.
-                    if len(mol_frags) > 1:
-                        error_message[4] += 1  # count the number of disconnected molecules
-                    largest_mol = max(
-                        mol_frags, default=mol, key=lambda m: m.GetNumAtoms()
-                    )
-                    Chem.SanitizeMol(largest_mol)
-                    smiles = Chem.MolToSmiles(largest_mol, canonical=True)
-                    valid.append(smiles)
-                    all_smiles.append(smiles)
-                    error_message[-1] += 1
-                except Chem.rdchem.AtomValenceException:
-                    error_message[1] += 1
-                    all_smiles.append("error")
-                except Chem.rdchem.KekulizeException:
-                    error_message[2] += 1
-                    all_smiles.append("error")
-                except Chem.rdchem.AtomKekulizeException or ValueError:
-                    error_message[3] += 1
-                    all_smiles.append("error")
+        valid, all_smiles, error_message = compute_valid_molecules(generated)
         print(
             f"Error messages: AtomValence {error_message[1]}, Kekulize {error_message[2]}, other {error_message[3]}, "
             f" -- No error {error_message[-1]}"
@@ -440,6 +448,11 @@ class SamplingMolecularMetrics(nn.Module):
             
             split = "test" if self.test else "val"
             N_total = len(all_generated_smiles)
+
+            normalized_constraints = resolve_constraints(self.cfg.model)
+            constraint_values = {
+                spec.type: spec.value for spec in normalized_constraints
+            }
             
             # meta for titles
             experiment_name = getattr(self.cfg.general, 'name', 'experiment')
@@ -450,10 +463,20 @@ class SamplingMolecularMetrics(nn.Module):
             # constraint caption
             kind = detect_constraint_kind(metrics_to_pass, split, self.cfg)
             constraint_meta = {
-                "max_rings": getattr(self.cfg.model, 'max_rings', None),
-                "max_ring_length": getattr(self.cfg.model, 'max_ring_length', None),
-                "min_rings": getattr(self.cfg.model, 'min_rings', None),
-                "min_ring_length": getattr(self.cfg.model, 'min_ring_length', None),
+                "max_rings": constraint_values.get(
+                    "ring_count_at_most", getattr(self.cfg.model, 'max_rings', None)
+                ),
+                "max_ring_length": constraint_values.get(
+                    "ring_length_at_most",
+                    getattr(self.cfg.model, 'max_ring_length', None),
+                ),
+                "min_rings": constraint_values.get(
+                    "ring_count_at_least", getattr(self.cfg.model, 'min_rings', None)
+                ),
+                "min_ring_length": constraint_values.get(
+                    "ring_length_at_least",
+                    getattr(self.cfg.model, 'min_ring_length', None),
+                ),
             }
             constraint_str = constraint_caption(kind, constraint_meta)
             if kind != "none" and not bool(
@@ -473,10 +496,10 @@ class SamplingMolecularMetrics(nn.Module):
                 N_struct,  # denominator = all generated graphs (structural)
                 ring_count_counts,              # per-molecule ring-count histogram
                 ring_length_counts,             # per-molecule MAX ring-length histogram (with 0=acyclic)
-                max_rings=getattr(self.cfg.model, 'max_rings', None),
-                max_ring_length=getattr(self.cfg.model, 'max_ring_length', None),
-                min_rings=getattr(self.cfg.model, 'min_rings', None),
-                min_ring_length=getattr(self.cfg.model, 'min_ring_length', None),
+                max_rings=constraint_meta["max_rings"],
+                max_ring_length=constraint_meta["max_ring_length"],
+                min_rings=constraint_meta["min_rings"],
+                min_ring_length=constraint_meta["min_ring_length"],
                 cfg=self.cfg,  # Pass configuration for constraint detection
             )
             
@@ -521,7 +544,7 @@ class SamplingMolecularMetrics(nn.Module):
                 and self.cfg
                 and (
                     not bool(getattr(self.cfg.model, "use_projection", True))
-                    or getattr(self.cfg.model, "rev_proj", None) in (None, "")
+                    or not resolve_constraints(self.cfg.model)
                 )
             ):
                 # No constraint experiment - set projection metrics to indicate no projection
@@ -680,29 +703,8 @@ class SamplingMolecularMetrics(nn.Module):
             'planarity': []
         }
         
-        # Detect constraint type from config
-        constraint_type = None
-        constraint_value = None
-        
-        if hasattr(self, 'cfg') and self.cfg is not None:
-            if hasattr(self.cfg.model, 'rev_proj'):
-                if self.cfg.model.rev_proj == 'ring_count_at_most':
-                    constraint_type = 'ring_count_at_most'
-                    constraint_value = getattr(self.cfg.model, 'max_rings', None)
-                elif self.cfg.model.rev_proj == 'ring_length_at_most':
-                    constraint_type = 'ring_length_at_most'
-                    constraint_value = getattr(self.cfg.model, 'max_ring_length', None)
-                elif self.cfg.model.rev_proj == 'ring_count_at_least':
-                    constraint_type = 'ring_count_at_least'
-                    constraint_value = getattr(self.cfg.model, 'min_rings', None)
-                elif self.cfg.model.rev_proj == 'ring_length_at_least':
-                    constraint_type = 'ring_length_at_least'
-                    constraint_value = getattr(self.cfg.model, 'min_ring_length', None)
-                elif self.cfg.model.rev_proj == 'planar':
-                    constraint_type = 'planar'
-                    constraint_value = None
-        
-        print(f"[VIOLATION TRACKING] Detected constraint: {constraint_type}, value: {constraint_value}")
+        specs = resolve_constraints(self.cfg.model) if self.cfg is not None else ()
+        print(f"[VIOLATION TRACKING] Detected constraints: {[s.to_dict() for s in specs]}")
         
         # Use the SAME graph construction method as projectors for consistency
         from ConStruct.projector.projector_utils import build_simple_graph_from_edge_tensor
@@ -715,50 +717,52 @@ class SamplingMolecularMetrics(nn.Module):
                 nx_graph = build_simple_graph_from_edge_tensor(edge_mat, mask)
                 
                 # Check ring count constraint - ONLY if it's the enforced constraint
-                if constraint_type == "ring_count_at_most" and constraint_value is not None:
-                    from ConStruct.projector.is_ring.is_ring_count_at_most import has_at_most_n_rings
-                    if not has_at_most_n_rings(nx_graph, constraint_value):
-                        violations['ring_count'].append({
-                            'index': f"{batch_idx}_{graph_idx}",
-                            'max_allowed': constraint_value,
-                            'actual': count_simple_cycles(nx_graph),
-                            'source': f'rank{local_rank}'
-                        })
+                for spec in specs:
+                    constraint_type = spec.type
+                    constraint_value = spec.value
+                    if constraint_type == "ring_count_at_most" and constraint_value is not None:
+                        from ConStruct.projector.is_ring.is_ring_count_at_most import has_at_most_n_rings
+                        if not has_at_most_n_rings(nx_graph, constraint_value):
+                            violations['ring_count'].append({
+                                'index': f"{batch_idx}_{graph_idx}",
+                                'max_allowed': constraint_value,
+                                'actual': count_simple_cycles(nx_graph),
+                                'source': f'rank{local_rank}'
+                            })
 
-                if constraint_type == "ring_count_at_least" and constraint_value is not None:
-                    from ConStruct.projector.is_ring.is_ring_count_at_least import has_at_least_n_rings
-                    if not has_at_least_n_rings(nx_graph, constraint_value):
-                        violations['ring_count'].append({
-                            'index': f"{batch_idx}_{graph_idx}",
-                            'min_allowed': constraint_value,
-                            'actual': count_simple_cycles(nx_graph),
-                            'source': f'rank{local_rank}'
-                        })
+                    if constraint_type == "ring_count_at_least" and constraint_value is not None:
+                        from ConStruct.projector.is_ring.is_ring_count_at_least import has_at_least_n_rings
+                        if not has_at_least_n_rings(nx_graph, constraint_value):
+                            violations['ring_count'].append({
+                                'index': f"{batch_idx}_{graph_idx}",
+                                'min_allowed': constraint_value,
+                                'actual': count_simple_cycles(nx_graph),
+                                'source': f'rank{local_rank}'
+                            })
                 
                 # Check ring length constraint - ONLY if it's the enforced constraint
-                if constraint_type == "ring_length_at_most" and constraint_value is not None:
-                    from ConStruct.projector.is_ring.is_ring_length_at_most import has_rings_of_length_at_most
-                    if not has_rings_of_length_at_most(nx_graph, constraint_value):
-                        violations['ring_length'].append({
-                            'index': f"{batch_idx}_{graph_idx}",
-                            'max_allowed': constraint_value,
-                            'actual': max_simple_cycle_length(nx_graph),
-                            'source': f'rank{local_rank}'
-                        })
+                    if constraint_type == "ring_length_at_most" and constraint_value is not None:
+                        from ConStruct.projector.is_ring.is_ring_length_at_most import has_rings_of_length_at_most
+                        if not has_rings_of_length_at_most(nx_graph, constraint_value):
+                            violations['ring_length'].append({
+                                'index': f"{batch_idx}_{graph_idx}",
+                                'max_allowed': constraint_value,
+                                'actual': max_simple_cycle_length(nx_graph),
+                                'source': f'rank{local_rank}'
+                            })
 
-                if constraint_type == "ring_length_at_least" and constraint_value is not None:
-                    from ConStruct.projector.is_ring.is_ring_length_at_least import has_rings_of_length_at_least
-                    if not has_rings_of_length_at_least(nx_graph, constraint_value):
-                        violations['ring_length'].append({
-                            'index': f"{batch_idx}_{graph_idx}",
-                            'min_allowed': constraint_value,
-                            'actual': max_simple_cycle_length(nx_graph),
-                            'source': f'rank{local_rank}'
-                        })
+                    if constraint_type == "ring_length_at_least" and constraint_value is not None:
+                        from ConStruct.projector.is_ring.is_ring_length_at_least import has_rings_of_length_at_least
+                        if not has_rings_of_length_at_least(nx_graph, constraint_value):
+                            violations['ring_length'].append({
+                                'index': f"{batch_idx}_{graph_idx}",
+                                'min_allowed': constraint_value,
+                                'actual': max_simple_cycle_length(nx_graph),
+                                'source': f'rank{local_rank}'
+                            })
                 
                 # Check planarity constraint - ONLY if it's the enforced constraint
-                if constraint_type == "planar":
-                    if not is_planar(nx_graph):
+                    if constraint_type == "planar" and not is_planar(nx_graph):
                         violations['planarity'].append({
                             'index': f"{batch_idx}_{graph_idx}",
                             'source': f'rank{local_rank}'
@@ -773,22 +777,20 @@ class SamplingMolecularMetrics(nn.Module):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         
         # Get the enforced constraint type from config
-        constraint_type = None
-        if hasattr(self, 'cfg') and self.cfg is not None:
-            if hasattr(self.cfg.model, 'rev_proj'):
-                constraint_type = self.cfg.model.rev_proj
+        specs = resolve_constraints(self.cfg.model) if self.cfg is not None else ()
+        constraint_types = {spec.type for spec in specs}
         
         # Only save violations for the enforced constraint
         enforced_violations = {}
-        if constraint_type in {'ring_count_at_most', 'ring_count_at_least'}:
+        if constraint_types & {'ring_count_at_most', 'ring_count_at_least'}:
             enforced_violations['ring_count'] = violations['ring_count']
-        elif constraint_type in {'ring_length_at_most', 'ring_length_at_least'}:
+        if constraint_types & {'ring_length_at_most', 'ring_length_at_least'}:
             enforced_violations['ring_length'] = violations['ring_length']
-        elif constraint_type == 'planar':
+        if 'planar' in constraint_types:
             enforced_violations['planarity'] = violations['planarity']
         
         # Debug: Show what's being tracked
-        print(f"[VIOLATION TRACKING] Enforced constraint: {constraint_type}")
+        print(f"[VIOLATION TRACKING] Enforced constraints: {sorted(constraint_types)}")
         print(f"[VIOLATION TRACKING] Tracking violations for: {list(enforced_violations.keys())}")
         print(f"[VIOLATION TRACKING] Ignoring violations for: {[k for k in violations.keys() if k not in enforced_violations]}")
         
@@ -811,22 +813,7 @@ class SamplingMolecularMetrics(nn.Module):
             with open(summary_filename, 'w') as f:
                 f.write(f"Constraint Violation Summary - Rank {local_rank}\n")
                 f.write(f"Timestamp: {timestamp}\n")
-                f.write(f"Enforced Constraint: {constraint_type}\n")
-                
-                # Get constraint value
-                constraint_value = None
-                if hasattr(self, 'cfg') and self.cfg is not None:
-                    if constraint_type == 'ring_count_at_most':
-                        constraint_value = getattr(self.cfg.model, 'max_rings', None)
-                    elif constraint_type == 'ring_length_at_most':
-                        constraint_value = getattr(self.cfg.model, 'max_ring_length', None)
-                    elif constraint_type == 'ring_count_at_least':
-                        constraint_value = getattr(self.cfg.model, 'min_rings', None)
-                    elif constraint_type == 'ring_length_at_least':
-                        constraint_value = getattr(self.cfg.model, 'min_ring_length', None)
-                
-                if constraint_value is not None:
-                    f.write(f"Constraint Value: {constraint_value}\n")
+                f.write(f"Enforced Constraints: {[spec.to_dict() for spec in specs]}\n")
                 f.write("\n")
                 
                 # Write violation counts

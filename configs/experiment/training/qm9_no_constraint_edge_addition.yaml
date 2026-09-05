@@ -4,10 +4,16 @@ defaults:
 
 general:
   name: 'qm9_no_constraint_edge_addition'
+  # Validity must be sampled at every validation check for Lightning callbacks.
+  check_val_every_n_epochs: 10
+  sample_every_val: 1
+  samples_to_generate: 1024
 
 model:
   transition: edge_insertion
   rev_proj: null
+  constraints: []
+  use_projection: false
   diffusion_steps: 500
   n_layers: 4
   hidden_mlp_dims: { X: 128, E: 128, y: 128 }
@@ -21,5 +27,17 @@ model:
     dim_ffy: 256
 
 train:
+  # A high safety ceiling lets patience, rather than the old epoch budget, end
+  # training in the normal case.
+  n_epochs: 5000
   early_stopping:
-    divergence_threshold: 300.0    # Stop if NLL exceeds 300.0 (appropriate for QM9 dataset)
+    enable: true
+    monitor: "val_sampling/Validity"
+    mode: "max"
+    patience: 30                  # 30 validation checks = 300 epochs
+    min_delta: 0.0                # Any strict validity increase resets patience
+    check_finite: true
+    stopping_threshold: null
+    divergence_threshold: null
+    check_on_train_epoch_end: false
+    min_epochs: 400

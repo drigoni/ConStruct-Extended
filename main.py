@@ -48,9 +48,31 @@ def validate_sampling_only_config(cfg: DictConfig) -> None:
         )
 
 
+def validate_early_stopping_config(cfg: DictConfig) -> None:
+    """Ensure a sampling metric exists at every early-stopping check."""
+    if (
+        cfg.general.test_only
+        or not cfg.train.early_stopping.enable
+        or not str(cfg.train.early_stopping.monitor).startswith("val_sampling/")
+    ):
+        return
+    if cfg.general.sample_every_val != 1:
+        raise ValueError(
+            "Early stopping on a val_sampling/* metric requires "
+            "general.sample_every_val=1 so the monitored metric is available "
+            "at every validation check."
+        )
+    if cfg.general.samples_to_generate <= 0:
+        raise ValueError(
+            "Early stopping on a val_sampling/* metric requires a positive "
+            "general.samples_to_generate."
+        )
+
+
 @hydra.main(version_base="1.3", config_path="./configs", config_name="config")
 def main(cfg: DictConfig):
     validate_sampling_only_config(cfg)
+    validate_early_stopping_config(cfg)
     pl.seed_everything(cfg.train.seed)
     dataset_config = cfg.dataset
 
@@ -136,12 +158,22 @@ def main(cfg: DictConfig):
 
         callbacks = []
         if cfg.train.save_model:
+            checkpoint_monitor = (
+                cfg.train.early_stopping.monitor
+                if cfg.train.early_stopping.enable
+                else "val/epoch_NLL"
+            )
+            checkpoint_mode = (
+                cfg.train.early_stopping.mode
+                if cfg.train.early_stopping.enable
+                else "min"
+            )
             checkpoint_callback = ModelCheckpoint(
                 dirpath=f"checkpoints/{cfg.general.name}",
                 filename="{epoch}",
-                monitor="val/epoch_NLL",
+                monitor=checkpoint_monitor,
                 save_top_k=5,
-                mode="min",
+                mode=checkpoint_mode,
                 every_n_epochs=1,
             )
             last_ckpt_save = ModelCheckpoint(
@@ -204,8 +236,9 @@ def main(cfg: DictConfig):
             )
         elif not cfg.general.test_only:
             trainer.fit(model, datamodule=datamodule, ckpt_path=cfg.general.resume)
-            # Test the checkpoint selected by validation NLL, not the final
-            # in-memory weights. Runs without checkpointing retain old behavior.
+            # Test the checkpoint selected by the configured validation monitor,
+            # not the final in-memory weights. Runs without checkpointing retain
+            # old behavior.
             test_ckpt_path = "best" if cfg.train.save_model else None
             trainer.test(model, datamodule=datamodule, ckpt_path=test_ckpt_path)
         else:

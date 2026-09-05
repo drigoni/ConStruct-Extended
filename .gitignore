@@ -178,3 +178,5 @@ chains/
 *generated_atom*
 *generated_samples*
 *generated_bond*
+/docs
+/samples

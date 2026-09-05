@@ -21,6 +21,7 @@ from ConStruct.metrics.metrics_utils import (
 from ConStruct.projector.projector_utils import has_lobster_components
 from ConStruct.projector.graph_cycles import count_simple_cycles, max_simple_cycle_length
 from ConStruct.projector.is_planar import is_planar
+from ConStruct.projector.constraints import resolve_constraints
 
 
 class SamplingMetrics(nn.Module):
@@ -50,6 +51,7 @@ class SamplingMetrics(nn.Module):
         # Add ring constraint metrics (structural)
         self.mean_ring_count_satisfaction = MeanMetric()
         self.mean_ring_length_satisfaction = MeanMetric()
+        self.mean_joint_constraint_satisfaction = MeanMetric()
         
         self.deg_histogram = DegreeHistogramMetric(self.stat)
 
@@ -134,6 +136,7 @@ class SamplingMetrics(nn.Module):
             self.mean_lobster_components,
             self.mean_ring_count_satisfaction,
             self.mean_ring_length_satisfaction,
+            self.mean_joint_constraint_satisfaction,
             self.deg_histogram,
         ]:
             metric.reset()
@@ -191,35 +194,44 @@ class SamplingMetrics(nn.Module):
         self.mean_lobster_components(lobster_components_ratios)
 
         # Ring constraint satisfaction (structural)
-        ring_constraint_info = None
-        if hasattr(self, 'cfg') and self.cfg and hasattr(self.cfg.model, 'rev_proj'):
-            if self.cfg.model.rev_proj == 'ring_count_at_most':
-                max_rings = getattr(self.cfg.model, 'max_rings', 3)
+        measured_constraint_types = set()
+        specs = resolve_constraints(self.cfg.model) if getattr(self, "cfg", None) else ()
+        for spec in specs:
+            if spec.type == 'ring_count_at_most':
+                max_rings = int(spec.value)
                 ring_count_ratios = ring_count_satisfaction_ratio(generated_graphs, max_rings).to(device)
                 self.mean_ring_count_satisfaction(ring_count_ratios)
-                ring_constraint_info = ('ring_count_at_most', max_rings)
+                measured_constraint_types.add(spec.type)
             
-            elif self.cfg.model.rev_proj == 'ring_length_at_most':
-                max_ring_length = getattr(self.cfg.model, 'max_ring_length', 6)
+            elif spec.type == 'ring_length_at_most':
+                max_ring_length = int(spec.value)
                 ring_length_ratios = ring_length_satisfaction_ratio(generated_graphs, max_ring_length).to(device)
                 self.mean_ring_length_satisfaction(ring_length_ratios)
-                ring_constraint_info = ('ring_length_at_most', max_ring_length)
+                measured_constraint_types.add(spec.type)
 
-            elif self.cfg.model.rev_proj == 'ring_count_at_least':
-                min_rings = getattr(self.cfg.model, 'min_rings', 1)
+            elif spec.type == 'ring_count_at_least':
+                min_rings = int(spec.value)
                 ring_count_ratios = ring_count_at_least_satisfaction_ratio(
                     generated_graphs, min_rings
                 ).to(device)
                 self.mean_ring_count_satisfaction(ring_count_ratios)
-                ring_constraint_info = ('ring_count_at_least', min_rings)
+                measured_constraint_types.add(spec.type)
 
-            elif self.cfg.model.rev_proj == 'ring_length_at_least':
-                min_ring_length = getattr(self.cfg.model, 'min_ring_length', 3)
+            elif spec.type == 'ring_length_at_least':
+                min_ring_length = int(spec.value)
                 ring_length_ratios = ring_length_at_least_satisfaction_ratio(
                     generated_graphs, min_ring_length
                 ).to(device)
                 self.mean_ring_length_satisfaction(ring_length_ratios)
-                ring_constraint_info = ('ring_length_at_least', min_ring_length)
+                measured_constraint_types.add(spec.type)
+
+        if {
+            "ring_count_at_least", "ring_length_at_least"
+        }.issubset(measured_constraint_types):
+            joint_ratios = joint_constraint_satisfaction_ratio(
+                ring_count_ratios, ring_length_ratios
+            )
+            self.mean_joint_constraint_satisfaction(joint_ratios)
 
         # Degree distributions
         self.deg_histogram(generated_graphs)
@@ -259,16 +271,20 @@ class SamplingMetrics(nn.Module):
         }
 
         # Add ring constraint metrics to WandB logging (using stored info)
-        if ring_constraint_info:
-            constraint_type, constraint_value = ring_constraint_info
-            if constraint_type in {'ring_count_at_most', 'ring_count_at_least'}:
-                satisfaction_rate = self.mean_ring_count_satisfaction.compute().item()
-                to_log[f"{key}/ring_count_satisfaction"] = satisfaction_rate
-                to_log[f"{key}/ring_count_violation"] = 1 - satisfaction_rate
-            elif constraint_type in {'ring_length_at_most', 'ring_length_at_least'}:
-                satisfaction_rate = self.mean_ring_length_satisfaction.compute().item()
-                to_log[f"{key}/ring_length_satisfaction"] = satisfaction_rate
-                to_log[f"{key}/ring_length_violation"] = 1 - satisfaction_rate
+        if measured_constraint_types & {'ring_count_at_most', 'ring_count_at_least'}:
+            satisfaction_rate = self.mean_ring_count_satisfaction.compute().item()
+            to_log[f"{key}/ring_count_satisfaction"] = satisfaction_rate
+            to_log[f"{key}/ring_count_violation"] = 1 - satisfaction_rate
+        if measured_constraint_types & {'ring_length_at_most', 'ring_length_at_least'}:
+            satisfaction_rate = self.mean_ring_length_satisfaction.compute().item()
+            to_log[f"{key}/ring_length_satisfaction"] = satisfaction_rate
+            to_log[f"{key}/ring_length_violation"] = 1 - satisfaction_rate
+        if {
+            "ring_count_at_least", "ring_length_at_least"
+        }.issubset(measured_constraint_types):
+            satisfaction_rate = self.mean_joint_constraint_satisfaction.compute().item()
+            to_log[f"{key}/joint_constraint_satisfaction"] = satisfaction_rate
+            to_log[f"{key}/joint_constraint_violation"] = 1 - satisfaction_rate
 
         if self.domain_metrics is not None:
             # Compute domain metrics normally
@@ -552,6 +568,17 @@ def ring_count_at_least_satisfaction_ratio(
             except Exception:
                 satisfied.append(0)
     return torch.tensor(satisfied, device=generated_graphs[0].X.device)
+
+
+def joint_constraint_satisfaction_ratio(
+    ring_count_ratios: Tensor, ring_length_ratios: Tensor
+) -> Tensor:
+    """Return one indicator per graph for the intersection of two constraints."""
+    if ring_count_ratios.shape != ring_length_ratios.shape:
+        raise ValueError("Constraint indicator tensors must have matching shapes.")
+    return torch.logical_and(
+        ring_count_ratios.bool(), ring_length_ratios.bool()
+    ).float()
 
 
 def ring_length_at_least_satisfaction_ratio(

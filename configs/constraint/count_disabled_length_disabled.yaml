@@ -1,0 +1,6 @@
+# @package _global_
+model:
+  constraints: []
+  use_projection: false
+general:
+  sampling_output_dir: samples/${general.name}/count_disabled_length_disabled/seed_${train.seed}

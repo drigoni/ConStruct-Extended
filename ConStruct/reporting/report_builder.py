@@ -160,8 +160,13 @@ def split_prefix(split: str) -> str:
 
 # -------- constraint detection & captions --------
 def detect_constraint_kind(metrics: Dict[str, Any], split: str, cfg=None) -> str:
-    if cfg is not None and hasattr(cfg.model, "rev_proj"):
-        projector = cfg.model.rev_proj
+    if cfg is not None:
+        from ConStruct.projector.constraints import resolve_constraints
+        specs = resolve_constraints(cfg.model)
+        types = {spec.type for spec in specs}
+        if {"ring_count_at_least", "ring_length_at_least"}.issubset(types):
+            return "joint_at_least"
+        projector = specs[0].type if len(specs) == 1 else None
         if projector in {
             "ring_count_at_most",
             "ring_count_at_least",
@@ -174,6 +179,11 @@ def detect_constraint_kind(metrics: Dict[str, Any], split: str, cfg=None) -> str
 
 
 def constraint_caption(kind: str, meta: Dict[str, Any]) -> str:
+    if kind == "joint_at_least":
+        return (
+            f"Ring count ≥ {meta.get('min_rings', 'k')} and maximum ring length ≥ "
+            f"{meta.get('min_ring_length', 'L')}"
+        )
     if kind == "ring_count_at_most":
         return f"Ring count ≤ {meta.get('max_rings', 'k')}"
     if kind == "ring_count_at_least":
@@ -204,6 +214,8 @@ def collect_core(split: str, metrics: Dict[str, Any], N_total: Optional[int], cf
         prop = metrics.get(f"{p}/ring_count_satisfaction")
     elif kind in {"ring_length_at_most", "ring_length_at_least"}:
         prop = metrics.get(f"{p}/ring_length_satisfaction")
+    elif kind == "joint_at_least":
+        prop = metrics.get(f"{p}/joint_constraint_satisfaction")
     rows.append(("Property satisfied (%)", "—" if kind=="none" else pct(prop)))
     # V.U.N. (%), over generated set
     u = metrics.get(f"{p}/Uniqueness"); n = metrics.get(f"{p}/Novelty"); v = metrics.get(f"{p}/Validity")
@@ -247,6 +259,10 @@ def collect_structural(
         rows.append(("Ring count satisfied (%)", pct(metrics.get(f"{p}/ring_count_satisfaction"))))
     elif kind.startswith("ring_length_"):
         rows.append(("Ring length satisfied (%)", pct(metrics.get(f"{p}/ring_length_satisfaction"))))
+    elif kind == "joint_at_least":
+        rows.append(("Ring count satisfied (%)", pct(metrics.get(f"{p}/ring_count_satisfaction"))))
+        rows.append(("Ring length satisfied (%)", pct(metrics.get(f"{p}/ring_length_satisfaction"))))
+        rows.append(("Joint constraints satisfied (%)", pct(metrics.get(f"{p}/joint_constraint_satisfaction"))))
     else:
         rows.append(("Constraint", "No structural constraint"))
 
@@ -260,7 +276,16 @@ def collect_structural(
         index = (length - 3) + 1
         return ring_length_counts[index] if ring_length_counts and index < len(ring_length_counts) else 0
 
-    if kind == "ring_count_at_most" and ring_count_counts is not None:
+    if kind == "joint_at_least":
+        if ring_count_counts is not None:
+            threshold = int(min_rings)
+            violating = sum(ring_count_counts[:threshold])
+            rows.append((f"Ring count <{threshold} (%)", f"{round(100.0 * violating / N_total, 4) if N_total else 0.0}%"))
+        if ring_length_counts is not None:
+            threshold = int(min_ring_length)
+            violating = ring_length_count(0) + sum(ring_length_count(length) for length in range(3, threshold))
+            rows.append((f"Maximum ring length <{threshold} (%)", f"{round(100.0 * violating / N_total, 4) if N_total else 0.0}%"))
+    elif kind == "ring_count_at_most" and ring_count_counts is not None:
         threshold = int(max_rings)
         for index in range(threshold + 1):
             add_ring_count(index, ring_count_counts[index] if index < len(ring_count_counts) else 0)
@@ -478,4 +503,4 @@ def write_tables(outdir: str, split: str, exp_name: str, dataset: str, constrain
             f.write(render_table_md(hdr+" — Alignment (Appendix)", sub, alignment))
     if include_timing and timing:
         with open(os.path.join(outdir, f"{split}_timing.md"), "w") as f:
-            f.write(render_table_md(hdr+" — Timing (Appendix)", sub, timing)) 
+            f.write(render_table_md(hdr+" — Timing (Appendix)", sub, timing))

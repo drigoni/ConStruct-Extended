@@ -594,6 +594,46 @@ class RingCountAtLeastProjector(AbstractProjector):
     @property
     def edge_mutation(self):
         return "remove"
+
+
+class JointAtLeastProjector(AbstractProjector):
+    """Preserve minimum ring-count and ring-length constraints together."""
+
+    def __init__(
+        self,
+        z_t: PlaceHolder,
+        min_rings: int,
+        min_ring_length: int,
+        atom_decoder=None,
+    ):
+        if min_rings < 1:
+            raise ValueError("The minimum ring count must be positive.")
+        if min_ring_length < 3:
+            raise ValueError("The minimum ring length must be at least 3.")
+        self.min_rings = min_rings
+        self.min_ring_length = min_ring_length
+        self.atom_decoder = atom_decoder
+        super().__init__(z_t)
+        for graph_idx, graph in enumerate(self.nx_graphs_list):
+            if not self.valid_graph_fn(graph):
+                raise ValueError(
+                    f"Initial graph {graph_idx} cannot satisfy "
+                    f"ring_count_at_least={min_rings} and "
+                    f"ring_length_at_least={min_ring_length}."
+                )
+
+    def valid_graph_fn(self, nx_graph):
+        return has_at_least_n_rings(
+            nx_graph, self.min_rings
+        ) and has_rings_of_length_at_least(nx_graph, self.min_ring_length)
+
+    @property
+    def can_block_edges(self):
+        return True
+
+    @property
+    def edge_mutation(self):
+        return "remove"
     
 
 

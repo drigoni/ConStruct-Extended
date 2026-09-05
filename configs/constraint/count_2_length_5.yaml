@@ -1,0 +1,12 @@
+# @package _global_
+model:
+  min_rings: 2
+  min_ring_length: 5
+  constraints:
+    - type: ring_count_at_least
+      min_rings: ${model.min_rings}
+    - type: ring_length_at_least
+      min_ring_length: ${model.min_ring_length}
+  use_projection: true
+general:
+  sampling_output_dir: samples/${general.name}/count_2_length_5/seed_${train.seed}

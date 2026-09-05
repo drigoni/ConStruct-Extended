@@ -350,5 +350,129 @@ target, and whether projection was enabled. The existing `general.test_only`
 five-seed likelihood-evaluation behavior is unchanged when
 `general.sampling_only=false`.
 
+### Full-QM9 generalist with inference-time cycle constraints
+
+Train a single checkpoint on unfiltered QM9. This profile uses the fully
+connected `edge_insertion` terminal distribution but does not configure or run
+a projector. It validates molecular validity every 10 epochs, keeps the
+best-validity checkpoint, and stops after 30 validation checks without a strict
+validity increase:
+
+```bash
+python main.py +experiment=training/qm9_no_constraint_edge_addition
+```
+
+Continue an existing run with the same validity-based stopping policy:
+
+```bash
+python main.py \
+  +experiment=training/qm9_no_constraint_edge_addition \
+  general.resume=/absolute/path/to/last.ckpt
+```
+
+At inference, `model.constraints` is the canonical list of structural targets.
+The provided profiles cover the complete count setting `{disabled, 1, 2}` by
+length setting `{disabled, 4, 5}` matrix:
+
+```text
+count_disabled_length_disabled
+count_1_length_disabled       count_2_length_disabled
+count_disabled_length_4       count_disabled_length_5
+count_1_length_4              count_1_length_5
+count_2_length_4              count_2_length_5
+```
+
+Load the same checkpoint for any cell. Profiles with a target enable
+projection; the fully disabled profile is the unprojected baseline. Output is
+written to `samples/qm9_no_constraint_edge_addition/<profile>/seed_<seed>`.
+
+```bash
+python main.py \
+  +experiment=training/qm9_no_constraint_edge_addition \
+  +constraint=count_2_length_5 \
+  general.sampling_only=true \
+  general.test_only=/absolute/path/to/model.ckpt
+```
+
+Run the initial one-seed, 10,000-sample matrix by invoking the command once per
+profile with `train.seed=0` (the default). Change replication or sample count
+without changing the checkpoint:
+
+```bash
+python main.py \
+  +experiment=training/qm9_no_constraint_edge_addition \
+  +constraint=count_1_length_4 \
+  general.sampling_only=true \
+  general.test_only=/absolute/path/to/model.ckpt \
+  train.seed=1000 \
+  general.final_model_samples_to_generate=2000
+```
+
+Thresholds remain ordinary Hydra settings. Because profile entries reference
+them, `model.min_rings=3` or `model.min_ring_length=6` updates the corresponding
+typed constraint. For an ad hoc configuration, set `model.constraints` to a
+list containing objects of type `ring_count_at_least` with `min_rings`, type
+`ring_length_at_least` with `min_ring_length`, or both. `model.use_projection`
+controls enforcement independently from measurement.
+
+Sampling metadata contains the canonical `constraints` array. Single-target
+runs also retain the legacy singular `constraint` object. Joint runs report
+ring-count, ring-length, and joint satisfaction and violation metrics.
+
+### Resumable 3×3 projection matrix
+
+After the checkpoint is available, one command generates any missing cells in
+the predefined `{none, 1, 2}` ring-count by `{none, 4, 5}` maximum-cycle-length
+grid and then cross-evaluates every cell against the same five targets:
+molecular validity, ring count ≥1 and ≥2, and maximum cycle length ≥4 and ≥5.
+
+```bash
+python -m ConStruct.analysis.run_constraint_matrix \
+  --checkpoint '/absolute/path/to/epoch=389.ckpt' \
+  --seed 0 \
+  --samples 10000
+```
+
+Generation runs the existing `main.py` sampling path once per profile in a
+fresh process. A completed cell is reused only when its checkpoint, seed,
+sample count, constraints, projection status, and rank artifacts match. The
+metric phase reloads the saved graph batches and deterministically evaluates
+exactly 10,000 graphs per cell, even if distributed generation created a few
+extras.
+
+The phases may also be run separately. Both commands are resumable:
+
+```bash
+python -m ConStruct.analysis.run_constraint_matrix \
+  --checkpoint '/absolute/path/to/epoch=389.ckpt' \
+  --phase generate
+
+python -m ConStruct.analysis.run_constraint_matrix \
+  --checkpoint '/absolute/path/to/epoch=389.ckpt' \
+  --phase metrics
+```
+
+Each failed stage is attempted three times. A persistent failure exits with a
+structured record under `matrix/seed_<seed>/errors/`; rerunning resumes from
+that profile without repeating completed cells. To deliberately replace a
+mismatched or completed cell, pass `--force-profile <profile>` during the
+generation phase. Its old sample directory is archived rather than deleted.
+
+The existing profile samples remain under
+`samples/qm9_no_constraint_edge_addition/<profile>/seed_<seed>/`. Aggregate
+artifacts are written under
+`samples/qm9_no_constraint_edge_addition/matrix/seed_<seed>/`:
+
+- `manifest.json` records checkpoint, seed, sample count, profiles, and phase
+  completion.
+- `cells/*.json` caches each profile's five post-hoc metrics.
+- `metrics.json` and `metrics.csv` contain the complete matrix.
+- `grids/*.md` contains five annotated 3×3 tables.
+- `heatmaps/*.{png,pdf}` contains five fixed-scale 0–100 heatmaps.
+- `logs/` and `errors/` preserve subprocess and failure diagnostics.
+
+Only load generated pickle files produced locally by a trusted run; pickle is
+not a safe interchange format for untrusted artifacts.
+
 
 ---
