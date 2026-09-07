@@ -474,5 +474,28 @@ artifacts are written under
 Only load generated pickle files produced locally by a trusted run; pickle is
 not a safe interchange format for untrusted artifacts.
 
+### Edge-deletion generalist and upper-bound matrix
+
+Train the full-QM9 unconstrained `absorbing_edges` model with the same
+validity-based early stopping policy:
+
+```bash
+python main.py +experiment=training/qm9_no_constraint_edge_absorbing
+```
+
+Then generate and cross-evaluate the `{none, ≤1, ≤2}` ring-count by
+`{none, ≤4, ≤5}` maximum-cycle-length matrix:
+
+```bash
+python -m ConStruct.analysis.run_edge_deletion_matrix \
+  --checkpoint '/absolute/path/to/model.ckpt' \
+  --seed 0 \
+  --samples 10000
+```
+
+The resumable samples, cell metrics, grids, and heatmaps are written below
+`samples/qm9_no_constraint_edge_absorbing/`, independently from the
+edge-insertion matrix.
+
 
 ---

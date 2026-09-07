@@ -1,0 +1,12 @@
+# @package _global_
+model:
+  max_rings: 1
+  max_ring_length: 4
+  constraints:
+    - type: ring_count_at_most
+      max_rings: ${model.max_rings}
+    - type: ring_length_at_most
+      max_ring_length: ${model.max_ring_length}
+  use_projection: true
+general:
+  sampling_output_dir: samples/${general.name}/at_most_count_1_length_4/seed_${train.seed}

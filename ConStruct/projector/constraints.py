@@ -19,6 +19,8 @@ LEGACY_DEFAULTS = {
     "ring_length_at_least": 3,
 }
 COMPOSABLE_AT_LEAST = {"ring_count_at_least", "ring_length_at_least"}
+COMPOSABLE_AT_MOST = {"ring_count_at_most", "ring_length_at_most"}
+COMPOSABLE_CYCLE_CONSTRAINTS = COMPOSABLE_AT_LEAST | COMPOSABLE_AT_MOST
 
 
 @dataclass(frozen=True)
@@ -63,10 +65,10 @@ def _new_constraint_specs(entries: Iterable[Any]) -> list[ConstraintSpec]:
     specs = []
     for index, entry in enumerate(entries):
         kind = _get(entry, "type")
-        if kind not in COMPOSABLE_AT_LEAST:
+        if kind not in COMPOSABLE_CYCLE_CONSTRAINTS:
             raise ValueError(
                 f"model.constraints[{index}].type must be one of "
-                f"{sorted(COMPOSABLE_AT_LEAST)}, got {kind!r}."
+                f"{sorted(COMPOSABLE_CYCLE_CONSTRAINTS)}, got {kind!r}."
             )
         field = THRESHOLD_FIELDS[kind]
         raw_value = _get(entry, field)
@@ -107,12 +109,14 @@ def resolve_constraints(model_cfg: Any) -> tuple[ConstraintSpec, ...]:
         by_type[spec.type] = spec
 
     normalized = tuple(by_type.values())
-    if len(normalized) > 1 and not {spec.type for spec in normalized}.issubset(
-        COMPOSABLE_AT_LEAST
+    normalized_types = {spec.type for spec in normalized}
+    if len(normalized) > 1 and not any(
+        normalized_types.issubset(family)
+        for family in (COMPOSABLE_AT_LEAST, COMPOSABLE_AT_MOST)
     ):
         raise ValueError(
-            "Multiple constraints are supported only for ring_count_at_least and "
-            "ring_length_at_least."
+            "Multiple constraints must belong to one composable cycle family: "
+            "ring_count/ring_length at_least, or ring_count/ring_length at_most."
         )
     return normalized
 

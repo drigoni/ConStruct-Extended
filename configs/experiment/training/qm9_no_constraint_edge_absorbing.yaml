@@ -4,10 +4,15 @@ defaults:
 
 general:
   name: 'qm9_no_constraint_edge_absorbing'
+  check_val_every_n_epochs: 10
+  sample_every_val: 1
+  samples_to_generate: 1024
 
 model:
   transition: absorbing_edges
-  rev_proj: null     # explicit null; if schema uses "", use null instead
+  rev_proj: null
+  constraints: []
+  use_projection: false
   diffusion_steps: 500
   n_layers: 4
   hidden_mlp_dims: { X: 128, E: 128, y: 128 }
@@ -19,3 +24,17 @@ model:
     dim_ffX: 256
     dim_ffE: 256
     dim_ffy: 256
+
+train:
+  n_epochs: 5000
+  early_stopping:
+    enable: true
+    monitor: "val_sampling/Validity"
+    mode: "max"
+    patience: 30
+    min_delta: 0.0
+    check_finite: true
+    stopping_threshold: null
+    divergence_threshold: null
+    check_on_train_epoch_end: false
+    min_epochs: 400

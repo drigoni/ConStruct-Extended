@@ -50,6 +50,7 @@ from ConStruct.projector.projector_utils import (
     LobsterProjector,
     RingCountAtMostProjector,
     RingLengthAtMostProjector,
+    JointAtMostProjector,
     RingCountAtLeastProjector,
     RingLengthAtLeastProjector,
     JointAtLeastProjector,
@@ -255,10 +256,16 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                     transition,
                     constraint.type,
                 )
-        if len(self.constraints) > 1 and transition != "edge_insertion":
-            raise ValueError(
-                "Composed at-least constraints require model.transition=edge_insertion."
-            )
+        constraint_types = {constraint.type for constraint in self.constraints}
+        if len(self.constraints) > 1:
+            if constraint_types.issubset(at_least_projectors) and transition != "edge_insertion":
+                raise ValueError(
+                    "Composed at-least constraints require model.transition=edge_insertion."
+                )
+            if constraint_types.issubset(at_most_projectors) and transition != "absorbing_edges":
+                raise ValueError(
+                    "Composed at-most constraints require model.transition=absorbing_edges."
+                )
         
         # Log successful validation (commented for clean output)
         # if transition in edge_deletion_transitions:
@@ -325,12 +332,21 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         constraints = self._active_constraints()
         if len(constraints) == 2:
             values = {spec.type: int(spec.value) for spec in constraints}
-            return JointAtLeastProjector(
-                z_t,
-                min_rings=values["ring_count_at_least"],
-                min_ring_length=values["ring_length_at_least"],
-                atom_decoder=getattr(self.dataset_infos, "atom_decoder", None),
-            )
+            if set(values) == {"ring_count_at_least", "ring_length_at_least"}:
+                return JointAtLeastProjector(
+                    z_t,
+                    min_rings=values["ring_count_at_least"],
+                    min_ring_length=values["ring_length_at_least"],
+                    atom_decoder=getattr(self.dataset_infos, "atom_decoder", None),
+                )
+            if set(values) == {"ring_count_at_most", "ring_length_at_most"}:
+                return JointAtMostProjector(
+                    z_t,
+                    max_rings=values["ring_count_at_most"],
+                    max_ring_length=values["ring_length_at_most"],
+                    atom_decoder=getattr(self.dataset_infos, "atom_decoder", None),
+                )
+            raise ValueError(f"Unsupported joint constraints: {sorted(values)}")
 
         projector = constraints[0].type if constraints else None
         if projector == "planar":
@@ -369,7 +385,10 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             return
         constraints = [
             spec for spec in self._active_constraints()
-            if spec.type in {"ring_count_at_least", "ring_length_at_least"}
+            if spec.type in {
+                "ring_count_at_least", "ring_length_at_least",
+                "ring_count_at_most", "ring_length_at_most",
+            }
         ]
         if not constraints:
             return
@@ -379,6 +398,12 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         from ConStruct.projector.is_ring.is_ring_length_at_least import (
             has_rings_of_length_at_least,
         )
+        from ConStruct.projector.is_ring.is_ring_count_at_most import (
+            has_at_most_n_rings,
+        )
+        from ConStruct.projector.is_ring.is_ring_length_at_most import (
+            has_rings_of_length_at_most,
+        )
 
         for graph_idx, (edge_mat, mask) in enumerate(
             zip(final_batch.E, final_batch.node_mask)
@@ -386,11 +411,13 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             graph = build_simple_graph_from_edge_tensor(edge_mat, mask)
             for constraint in constraints:
                 threshold = int(constraint.value)
-                valid = (
-                    has_at_least_n_rings(graph, threshold)
-                    if constraint.type == "ring_count_at_least"
-                    else has_rings_of_length_at_least(graph, threshold)
-                )
+                predicates = {
+                    "ring_count_at_least": has_at_least_n_rings,
+                    "ring_length_at_least": has_rings_of_length_at_least,
+                    "ring_count_at_most": has_at_most_n_rings,
+                    "ring_length_at_most": has_rings_of_length_at_most,
+                }
+                valid = predicates[constraint.type](graph, threshold)
                 if not valid:
                     raise AssertionError(
                         f"Returned tensor graph {graph_idx} violates "

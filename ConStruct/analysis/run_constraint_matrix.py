@@ -453,9 +453,11 @@ def load_trimmed_batches(sample_dir: Path, requested_samples: int) -> list[Place
 
 
 def evaluate_batches(
-    batches: list[PlaceHolder], atom_decoder: list[str]
+    batches: list[PlaceHolder], atom_decoder: list[str], direction: str = "at_least"
 ) -> dict[str, Any]:
     """Compute the same five targets for a saved sample set in one pass."""
+    if direction not in {"at_least", "at_most"}:
+        raise ValueError(f"Unknown cycle metric direction: {direction}")
     molecules = []
     cycle_counts = []
     maximum_cycle_lengths = []
@@ -475,17 +477,16 @@ def evaluate_batches(
     if total == 0 or len(molecules) != total:
         raise ValueError("Cannot evaluate an empty or inconsistent graph collection.")
     valid, _, errors = compute_valid_molecules(molecules)
-    counts = {
-        "molecular_validity": len(valid),
-        "ring_count_at_least_1": sum(value >= 1 for value in cycle_counts),
-        "ring_count_at_least_2": sum(value >= 2 for value in cycle_counts),
-        "ring_length_at_least_4": sum(
-            value >= 4 for value in maximum_cycle_lengths
-        ),
-        "ring_length_at_least_5": sum(
-            value >= 5 for value in maximum_cycle_lengths
-        ),
-    }
+    comparison = (lambda value, threshold: value >= threshold) if direction == "at_least" else (lambda value, threshold: value <= threshold)
+    counts = {"molecular_validity": len(valid)}
+    for threshold in (1, 2):
+        counts[f"ring_count_{direction}_{threshold}"] = sum(
+            comparison(value, threshold) for value in cycle_counts
+        )
+    for threshold in (4, 5):
+        counts[f"ring_length_{direction}_{threshold}"] = sum(
+            comparison(value, threshold) for value in maximum_cycle_lengths
+        )
     metrics = {f"{key}_pct": 100.0 * value / total for key, value in counts.items()}
     return {
         "num_graphs": total,
@@ -603,42 +604,90 @@ def _matrix_for(cells: dict[str, dict[str, Any]], metric: str) -> np.ndarray:
     )
 
 
-def _level_label(value: int | None) -> str:
-    return "none" if value is None else f"≥{value}"
+def matrix_for_profiles(
+    cells: dict[str, dict[str, Any]],
+    metric: str,
+    profiles: Iterable[Any],
+    count_levels: tuple[int | None, ...],
+    length_levels: tuple[int | None, ...],
+    count_attribute: str,
+    length_attribute: str,
+) -> np.ndarray:
+    profiles = tuple(profiles)
+    return np.array(
+        [
+            [
+                cells[
+                    next(
+                        profile.name
+                        for profile in profiles
+                        if getattr(profile, count_attribute) == count
+                        and getattr(profile, length_attribute) == length
+                    )
+                ]["metrics"][metric]
+                for length in length_levels
+            ]
+            for count in count_levels
+        ],
+        dtype=float,
+    )
+
+
+def _level_label(value: int | None, comparison_symbol: str = "≥") -> str:
+    return "none" if value is None else f"{comparison_symbol}{value}"
 
 
 def _metric_slug(metric: str) -> str:
     return metric.removesuffix("_pct")
 
 
-def _render_markdown_grid(title: str, matrix: np.ndarray) -> str:
-    headers = [_level_label(value) for value in LENGTH_LEVELS]
+def _render_markdown_grid(
+    title: str,
+    matrix: np.ndarray,
+    count_levels: tuple[int | None, ...] = COUNT_LEVELS,
+    length_levels: tuple[int | None, ...] = LENGTH_LEVELS,
+    bound_label: str = "minimum",
+    comparison_symbol: str = "≥",
+) -> str:
+    headers = [_level_label(value, comparison_symbol) for value in length_levels]
     lines = [
         f"# {title}",
         "",
         "Values are percentages over the exact requested graph count.",
         "",
-        "| Enforced minimum ring count \\ enforced minimum maximum-cycle length | "
+        f"| Enforced {bound_label} ring count \\ enforced {bound_label} maximum-cycle length | "
         + " | ".join(headers)
         + " |",
         "|---|" + "---:|" * len(headers),
     ]
-    for row_index, count in enumerate(COUNT_LEVELS):
+    for row_index, count in enumerate(count_levels):
         values = " | ".join(f"{value:.4f}%" for value in matrix[row_index])
-        lines.append(f"| {_level_label(count)} | {values} |")
+        lines.append(f"| {_level_label(count, comparison_symbol)} | {values} |")
     return "\n".join(lines) + "\n"
 
 
-def _save_heatmap(path: Path, title: str, matrix: np.ndarray) -> None:
+def _save_heatmap(
+    path: Path,
+    title: str,
+    matrix: np.ndarray,
+    count_levels: tuple[int | None, ...] = COUNT_LEVELS,
+    length_levels: tuple[int | None, ...] = LENGTH_LEVELS,
+    bound_label: str = "minimum",
+    comparison_symbol: str = "≥",
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     figure, axis = plt.subplots(figsize=(7.2, 5.4))
     image = axis.imshow(matrix, cmap="viridis", vmin=0, vmax=100, aspect="auto")
-    axis.set_xticks(range(len(LENGTH_LEVELS)))
-    axis.set_xticklabels([_level_label(value) for value in LENGTH_LEVELS])
-    axis.set_yticks(range(len(COUNT_LEVELS)))
-    axis.set_yticklabels([_level_label(value) for value in COUNT_LEVELS])
-    axis.set_xlabel("Enforced minimum maximum-cycle length")
-    axis.set_ylabel("Enforced minimum ring count")
+    axis.set_xticks(range(len(length_levels)))
+    axis.set_xticklabels(
+        [_level_label(value, comparison_symbol) for value in length_levels]
+    )
+    axis.set_yticks(range(len(count_levels)))
+    axis.set_yticklabels(
+        [_level_label(value, comparison_symbol) for value in count_levels]
+    )
+    axis.set_xlabel(f"Enforced {bound_label} maximum-cycle length")
+    axis.set_ylabel(f"Enforced {bound_label} ring count")
     axis.set_title(title)
     for row in range(matrix.shape[0]):
         for column in range(matrix.shape[1]):
@@ -675,9 +724,29 @@ def render_aggregate(
     checkpoint: Path,
     seed: int,
     requested_samples: int,
+    *,
+    profiles: tuple[Any, ...] = PROFILES,
+    metrics: tuple[tuple[str, str], ...] = METRICS,
+    count_levels: tuple[int | None, ...] = COUNT_LEVELS,
+    length_levels: tuple[int | None, ...] = LENGTH_LEVELS,
+    count_attribute: str = "min_rings",
+    length_attribute: str = "min_ring_length",
+    count_cell_field: str = "enforced_min_rings",
+    length_cell_field: str = "enforced_min_ring_length",
+    bound_label: str = "minimum",
+    comparison_symbol: str = "≥",
 ) -> None:
     metric_matrices = {
-        metric: _matrix_for(cells, metric) for metric, _ in METRICS
+        metric: matrix_for_profiles(
+            cells,
+            metric,
+            profiles,
+            count_levels,
+            length_levels,
+            count_attribute,
+            length_attribute,
+        )
+        for metric, _ in metrics
     }
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -686,14 +755,14 @@ def render_aggregate(
         "seed": seed,
         "requested_samples_per_cell": requested_samples,
         "row_axis": {
-            "name": "enforced_min_rings",
-            "values": list(COUNT_LEVELS),
+            "name": count_cell_field,
+            "values": list(count_levels),
         },
         "column_axis": {
-            "name": "enforced_min_ring_length",
-            "values": list(LENGTH_LEVELS),
+            "name": length_cell_field,
+            "values": list(length_levels),
         },
-        "cells": [cells[profile.name] for profile in PROFILES],
+        "cells": [cells[profile.name] for profile in profiles],
         "grids": {
             metric: matrix.tolist() for metric, matrix in metric_matrices.items()
         },
@@ -703,35 +772,58 @@ def render_aggregate(
     stream = io.StringIO()
     fieldnames = [
         "profile",
-        "enforced_min_rings",
-        "enforced_min_ring_length",
+        count_cell_field,
+        length_cell_field,
         "num_graphs",
-        *(metric for metric, _ in METRICS),
+        *(metric for metric, _ in metrics),
     ]
     writer = csv.DictWriter(stream, fieldnames=fieldnames)
     writer.writeheader()
-    for profile in PROFILES:
+    for profile in profiles:
         cell = cells[profile.name]
         writer.writerow(
             {
                 "profile": profile.name,
-                "enforced_min_rings": profile.min_rings,
-                "enforced_min_ring_length": profile.min_ring_length,
+                count_cell_field: getattr(profile, count_attribute),
+                length_cell_field: getattr(profile, length_attribute),
                 "num_graphs": cell["num_graphs"],
                 **cell["metrics"],
             }
         )
     _atomic_write_text(matrix_root / "metrics.csv", stream.getvalue())
 
-    for metric, title in METRICS:
+    for metric, title in metrics:
         slug = _metric_slug(metric)
         matrix = metric_matrices[metric]
         _atomic_write_text(
             matrix_root / "grids" / f"{slug}.md",
-            _render_markdown_grid(title, matrix),
+            _render_markdown_grid(
+                title,
+                matrix,
+                count_levels,
+                length_levels,
+                bound_label,
+                comparison_symbol,
+            ),
         )
-        _save_heatmap(matrix_root / "heatmaps" / f"{slug}.png", title, matrix)
-        _save_heatmap(matrix_root / "heatmaps" / f"{slug}.pdf", title, matrix)
+        _save_heatmap(
+            matrix_root / "heatmaps" / f"{slug}.png",
+            title,
+            matrix,
+            count_levels,
+            length_levels,
+            bound_label,
+            comparison_symbol,
+        )
+        _save_heatmap(
+            matrix_root / "heatmaps" / f"{slug}.pdf",
+            title,
+            matrix,
+            count_levels,
+            length_levels,
+            bound_label,
+            comparison_symbol,
+        )
 
 
 def _manifest_request(

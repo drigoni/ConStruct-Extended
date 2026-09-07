@@ -539,6 +539,37 @@ class RingLengthAtMostProjector(AbstractProjector):
     def can_block_edges(self):
         """Enable hash-based edge blocking from the original paper."""
         return True
+
+
+class JointAtMostProjector(AbstractProjector):
+    """Preserve maximum ring-count and maximum ring-length constraints together."""
+
+    def __init__(
+        self,
+        z_t: PlaceHolder,
+        max_rings: int,
+        max_ring_length: int,
+        atom_decoder=None,
+    ):
+        if max_rings < 0:
+            raise ValueError("The maximum ring count must be non-negative.")
+        if max_ring_length < 0:
+            raise ValueError("The maximum ring length must be non-negative.")
+        self.max_rings = max_rings
+        self.max_ring_length = max_ring_length
+        self.atom_decoder = atom_decoder
+        super().__init__(z_t)
+
+    def valid_graph_fn(self, nx_graph):
+        from ConStruct.projector.graph_cycles import simple_cycle_count_exceeds
+
+        return not simple_cycle_count_exceeds(
+            nx_graph, self.max_rings
+        ) and has_rings_of_length_at_most(nx_graph, self.max_ring_length)
+
+    @property
+    def can_block_edges(self):
+        return True
     
 
 

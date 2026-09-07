@@ -1,0 +1,9 @@
+# @package _global_
+model:
+  max_rings: 1
+  constraints:
+    - type: ring_count_at_most
+      max_rings: ${model.max_rings}
+  use_projection: true
+general:
+  sampling_output_dir: samples/${general.name}/at_most_count_1_length_disabled/seed_${train.seed}
