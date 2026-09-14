@@ -7,8 +7,10 @@ Experiments are composed with Hydra from `configs/config.yaml` and selected with
 
 The `edge_insertion` forward process approaches a complete graph. Bond types on
 that terminal graph are sampled from the dataset marginals after removing and
-renormalizing the no-bond class. Reverse generation removes edges, and the
-projector restores removals that would violate the configured lower bound.
+renormalizing the no-bond class. The experimental `edge_insertion_single`
+variant instead makes every terminal edge a single bond. Reverse generation
+removes edges, and the projector restores removals that would violate the
+configured lower bound.
 
 Structural constraints use all unique simple graph cycles:
 
@@ -36,6 +38,7 @@ python main.py +experiment=debug/edge_insertion/ring_count_at_least/qm9_debug_ri
 python main.py +experiment=debug/edge_insertion/ring_length_at_least/moses_debug_ring_length_at_least_5
 python main.py +experiment=thesis/edge_insertion/ring_count_at_least/moses_thesis_ring_count_at_least_3
 python main.py +experiment=thesis/edge_insertion/ring_length_at_least/qm9_thesis_ring_length_at_least_6
+python main.py +experiment=training/qm9_no_constraint_edge_addition_single
 ```
 
 ## SLURM examples

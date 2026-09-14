@@ -31,3 +31,15 @@ _Avoid_: Projector, generation constraint
 **Matrix evaluation**:
 The comparison of every projection profile against the same complete set of cross-evaluation targets.
 _Avoid_: Grid search, hyperparameter sweep
+
+**Absorbing edge label**:
+An edge category toward which every pair label converges at the terminal point of an absorbing edge diffusion.
+_Avoid_: Terminal bond, noise bond
+
+**Positive-marginal edge insertion**:
+A topology-insertion diffusion whose absorbing distribution spans present-edge labels in their empirical proportions.
+_Avoid_: Standard insertion, random-edge insertion
+
+**Single-bond edge insertion**:
+A topology-insertion diffusion whose sole absorbing edge label is the single-bond category.
+_Avoid_: Pure insertion, symmetric insertion

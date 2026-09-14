@@ -190,14 +190,26 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 charges_marginals=self.dataset_infos.charges_marginals,
                 y_classes=self.output_dims.y,
             )
-        elif cfg.model.transition == "edge_insertion":
-            print("Edge-addition transition model (for 'at least' constraints)")
+        elif cfg.model.transition in {"edge_insertion", "edge_insertion_single"}:
+            absorbing_edge_class = (
+                1 if cfg.model.transition == "edge_insertion_single" else None
+            )
+            endpoint = (
+                "single-bond"
+                if absorbing_edge_class is not None
+                else "positive-marginal"
+            )
+            print(
+                "Edge-addition transition model "
+                f"({endpoint} endpoint; for 'at least' constraints)"
+            )
             self.noise_model = EdgeInsertionTransition(
                 cfg=cfg,
                 x_marginals=self.dataset_infos.atom_types,
                 e_marginals=self.dataset_infos.edge_types,
                 charges_marginals=self.dataset_infos.charges_marginals,
                 y_classes=self.output_dims.y,
+                absorbing_edge_class=absorbing_edge_class,
             )
         else:
             # Debug logging removed for production
@@ -236,7 +248,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         edge_deletion_transitions = ["absorbing_edges"]
         at_most_projectors = ["ring_count_at_most", "ring_length_at_most"]
         
-        edge_insertion_transitions = ["edge_insertion"]
+        edge_insertion_transitions = ["edge_insertion", "edge_insertion_single"]
         at_least_projectors = ["ring_count_at_least", "ring_length_at_least"]
         
         # Marginal transitions can use any projector
@@ -258,9 +270,12 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 )
         constraint_types = {constraint.type for constraint in self.constraints}
         if len(self.constraints) > 1:
-            if constraint_types.issubset(at_least_projectors) and transition != "edge_insertion":
+            if (
+                constraint_types.issubset(at_least_projectors)
+                and transition not in edge_insertion_transitions
+            ):
                 raise ValueError(
-                    "Composed at-least constraints require model.transition=edge_insertion."
+                    "Composed at-least constraints require an edge-insertion transition."
                 )
             if constraint_types.issubset(at_most_projectors) and transition != "absorbing_edges":
                 raise ValueError(

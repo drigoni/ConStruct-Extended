@@ -47,7 +47,14 @@ class NoiseModel:
         # ===== TRANSITION MECHANISM SELECTION =====
         # Different transition types require different beta schedules
         # This ensures proper separation of mechanisms
-        if cfg.model.transition in ["uniform", "marginal", "planar", "absorbing_edges", "edge_insertion"]:
+        if cfg.model.transition in [
+            "uniform",
+            "marginal",
+            "planar",
+            "absorbing_edges",
+            "edge_insertion",
+            "edge_insertion_single",
+        ]:
             # Standard cosine schedule for most transitions
             betas = diffusion_utils.cosine_beta_schedule_discrete(
                 self.timesteps, self.nu_arr
@@ -239,13 +246,33 @@ class NoiseModel:
         """Sample from the limit distribution of the diffusion process"""
 
         def sample_from_categorical(probs_tensor):
-            """Defining this function because torch.multinomial sometimes samples types that have 0 probability. This is problematic for the case of absorbing transition matrices, where all the edges should be 'no-edge type' and it was not happening."""
-            if torch.nonzero(probs_tensor[:, 1:]).numel() == 0:
-                # if all the probabilities are 0 except the first type, then sample from the first type
-                sampled = torch.zeros(probs_tensor.shape[0], 1, dtype=torch.int64)
-                # parse to int because entries are indexes
-            else:
-                sampled = probs_tensor.multinomial(1)
+            """Sample categorically while making zero-probability classes unreachable."""
+            if probs_tensor.ndim != 2:
+                raise ValueError("Categorical probabilities must be a two-dimensional tensor.")
+            if not torch.is_floating_point(probs_tensor):
+                probs_tensor = probs_tensor.float()
+            if not torch.isfinite(probs_tensor).all() or (probs_tensor < 0).any():
+                raise ValueError("Categorical probabilities must be finite and non-negative.")
+
+            positive_support = probs_tensor > 0
+            if not positive_support.any(dim=-1).all():
+                raise ValueError("Every categorical distribution must have positive mass.")
+
+            # Gumbel-max is equivalent to categorical sampling. Masking the
+            # logits with -inf guarantees that a zero-mass class cannot win,
+            # avoiding rare torch.multinomial draws outside the support.
+            logits = torch.where(
+                positive_support,
+                probs_tensor.log(),
+                torch.full_like(probs_tensor, -torch.inf),
+            )
+            uniform = torch.rand_like(logits).clamp_min_(
+                torch.finfo(logits.dtype).tiny
+            )
+            gumbel = -torch.log(-torch.log(uniform))
+            sampled = (logits + gumbel).argmax(dim=-1, keepdim=True)
+            if not positive_support.gather(dim=-1, index=sampled).all():
+                raise RuntimeError("Categorical sampler selected a zero-probability class.")
             return sampled
 
         bs, n_max = node_mask.shape
@@ -310,6 +337,19 @@ class NoiseModel:
         Qtb = self.get_Qt_bar(t_int=t_int)
         Qsb = self.get_Qt_bar(t_int=s_int)
         Qt = self.get_Qt(t_int)
+
+        # Index zero in the trained schedules is already noisy (for linear
+        # edges, alpha_bar[0] = T / (T + 1)). The final output must instead
+        # target clean data. Preserve all trained noise levels and intermediate
+        # steps, but use q(z_t | x_clean) and an identity clean transition at
+        # this boundary. Replacing Qsb alone would give an inconsistent Bayes
+        # posterior; Qt must also become Qtb.
+        final = (s_int == 0).reshape(-1, 1, 1)
+        for key in ("X", "charges", "E", "y"):
+            qsb = getattr(Qsb, key)
+            identity = torch.eye(qsb.shape[-1], device=qsb.device, dtype=qsb.dtype)
+            setattr(Qsb, key, torch.where(final, identity, qsb))
+            setattr(Qt, key, torch.where(final, getattr(Qtb, key), getattr(Qt, key)))
 
         # Normalize predictions for the categorical features
         pred_X = F.softmax(pred.X, dim=-1)  # bs, n, d0
@@ -516,13 +556,20 @@ class EdgeInsertionTransition(MarginalTransition):
     Edge-addition forward diffusion for "at least" constraints.
 
     Forward diffusion absorbs every edge state toward a fully connected limit
-    distribution supported only on existing edge types. This yields a dense
-    terminal graph with random bond types, and the reverse process removes
-    edges while a projector can block removals that would violate minimum-ring
-    constraints.
+    distribution supported only on existing edge types. By default, terminal
+    bond types follow the positive-edge data marginal. ``absorbing_edge_class``
+    can instead select one deterministic positive edge class.
     """
 
-    def __init__(self, cfg, x_marginals, e_marginals, charges_marginals, y_classes):
+    def __init__(
+        self,
+        cfg,
+        x_marginals,
+        e_marginals,
+        charges_marginals,
+        y_classes,
+        absorbing_edge_class: int | None = None,
+    ):
         super().__init__(cfg, x_marginals, e_marginals, charges_marginals, y_classes)
 
         if self.E_classes < 2:
@@ -532,15 +579,29 @@ class EdgeInsertionTransition(MarginalTransition):
 
         self.E_marginals = torch.zeros(self.E_classes)
 
-        # Force the limit distribution to remain fully connected while letting
-        # the terminal bond type vary across the available edge classes.
-        positive_edge_marginals = e_marginals[1:].clone().to(torch.float32)
-        positive_mass = positive_edge_marginals.sum()
-        if positive_mass <= 0:
-            positive_edge_marginals = torch.ones(self.E_classes - 1, dtype=torch.float32)
+        if absorbing_edge_class is not None:
+            if (
+                isinstance(absorbing_edge_class, bool)
+                or not isinstance(absorbing_edge_class, int)
+                or not 1 <= absorbing_edge_class < self.E_classes
+            ):
+                raise ValueError(
+                    "The absorbing edge class must be an integer in "
+                    f"[1, {self.E_classes})."
+                )
+            self.E_marginals[absorbing_edge_class] = 1
+        else:
+            # Preserve the original edge-insertion endpoint: positive bond
+            # types follow the data marginal conditioned on an edge existing.
+            positive_edge_marginals = e_marginals[1:].clone().to(torch.float32)
             positive_mass = positive_edge_marginals.sum()
+            if positive_mass <= 0:
+                positive_edge_marginals = torch.ones(
+                    self.E_classes - 1, dtype=torch.float32
+                )
+                positive_mass = positive_edge_marginals.sum()
 
-        self.E_marginals[1:] = positive_edge_marginals / positive_mass
+            self.E_marginals[1:] = positive_edge_marginals / positive_mass
         super().complete_init()
         if self.E_marginals[0] != 0 or not torch.isclose(
             self.E_marginals.sum(), torch.tensor(1.0)

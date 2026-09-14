@@ -1,5 +1,5 @@
 # Model settings
-transition: 'absorbing_edges'                          # uniform, marginal, planar, absorbing_edges, edge_insertion
+transition: 'absorbing_edges'                          # uniform, marginal, planar, absorbing_edges, edge_insertion, edge_insertion_single
 diffusion_steps: 500
 n_layers: 5
 

@@ -6,7 +6,10 @@ import torch
 from omegaconf import OmegaConf
 
 from ConStruct.diffusion.distributions import DistributionNodes
-from ConStruct.diffusion.noise_model import EdgeInsertionTransition
+from ConStruct.diffusion.noise_model import (
+    AbsorbingEdgesTransition,
+    EdgeInsertionTransition,
+)
 from ConStruct.metrics.sampling_metrics import (
     joint_constraint_satisfaction_ratio,
     ring_count_at_least_satisfaction_ratio,
@@ -255,6 +258,142 @@ class EdgeAdditionAtLeastTests(unittest.TestCase):
         qt_bar = transition.get_Qt_bar(torch.tensor([2]))
         self.assertTrue(torch.allclose(qt.E.sum(dim=-1), torch.ones_like(qt.E[..., 0])))
         self.assertTrue(torch.allclose(qt_bar.E.sum(dim=-1), torch.ones_like(qt_bar.E[..., 0])))
+
+    def test_terminal_sampler_only_draws_from_strictly_positive_edge_support(self):
+        cfg = OmegaConf.create({
+            "model": {
+                "diffusion_steps": 5,
+                "transition": "edge_insertion",
+                "nu": {"x": 1, "c": 1, "e": 1, "y": 1},
+            }
+        })
+        transition = EdgeInsertionTransition(
+            cfg,
+            x_marginals=torch.tensor([0.4, 0.6]),
+            e_marginals=torch.tensor([0.7, 0.8, 0.15, 0.05, 0.0]),
+            charges_marginals=torch.tensor([1.0]),
+            y_classes=0,
+        )
+
+        torch.manual_seed(0)
+        z_t = transition.sample_limit_dist(
+            torch.ones((4096, 9), dtype=torch.bool)
+        )
+        active_edge_classes = z_t.E.argmax(dim=-1)[
+            :, ~torch.eye(9, dtype=torch.bool)
+        ]
+
+        self.assertTrue((active_edge_classes > 0).all())
+        self.assertFalse((active_edge_classes == 4).any())
+        self.assertTrue(torch.equal(z_t.E, z_t.E.transpose(1, 2)))
+
+    def test_single_bond_terminal_graph(self):
+        cfg = OmegaConf.create({
+            "model": {
+                "diffusion_steps": 5,
+                "transition": "edge_insertion_single",
+                "nu": {"x": 1, "c": 1, "e": 1, "y": 1},
+            }
+        })
+        transition = EdgeInsertionTransition(
+            cfg,
+            x_marginals=torch.tensor([0.4, 0.6]),
+            e_marginals=torch.tensor([0.7, 0.1, 0.1, 0.05, 0.05]),
+            charges_marginals=torch.tensor([1.0]),
+            y_classes=0,
+            absorbing_edge_class=1,
+        )
+        self.assertTrue(
+            torch.equal(
+                transition.E_marginals,
+                torch.tensor([0.0, 1.0, 0.0, 0.0, 0.0]),
+            )
+        )
+
+        z_t = transition.sample_limit_dist(
+            torch.tensor([[True, True, True, False]])
+        )
+        edge_classes = z_t.E.argmax(dim=-1)
+        active = torch.ones((3, 3), dtype=torch.bool)
+        active.fill_diagonal_(False)
+        self.assertTrue((edge_classes[0, :3, :3][active] == 1).all())
+        self.assertTrue((edge_classes[0].diagonal() == 0).all())
+        self.assertTrue((edge_classes[0, 3] == 0).all())
+        self.assertTrue((edge_classes[0, :, 3] == 0).all())
+        self.assertTrue(torch.equal(z_t.E, z_t.E.transpose(1, 2)))
+
+    def test_single_bond_absorbing_class_validation(self):
+        cfg = OmegaConf.create({
+            "model": {
+                "diffusion_steps": 5,
+                "transition": "edge_insertion_single",
+                "nu": {"x": 1, "c": 1, "e": 1, "y": 1},
+            }
+        })
+        kwargs = {
+            "cfg": cfg,
+            "x_marginals": torch.tensor([0.4, 0.6]),
+            "e_marginals": torch.tensor([0.7, 0.1, 0.1, 0.05, 0.05]),
+            "charges_marginals": torch.tensor([1.0]),
+            "y_classes": 0,
+        }
+        for invalid_class in (0, 5, True, 1.5):
+            with self.subTest(invalid_class=invalid_class), self.assertRaises(ValueError):
+                EdgeInsertionTransition(
+                    **kwargs, absorbing_edge_class=invalid_class
+                )
+
+    def test_single_bond_kernel_is_deletion_under_label_swap(self):
+        common = {
+            "x_marginals": torch.tensor([0.4, 0.6]),
+            "e_marginals": torch.tensor([0.7, 0.1, 0.1, 0.05, 0.05]),
+            "charges_marginals": torch.tensor([1.0]),
+            "y_classes": 0,
+        }
+        cfg_deletion = OmegaConf.create({
+            "model": {
+                "diffusion_steps": 20,
+                "transition": "absorbing_edges",
+                "nu": {"x": 1, "c": 1, "e": 1, "y": 1},
+            }
+        })
+        cfg_insertion = OmegaConf.create({
+            "model": {
+                "diffusion_steps": 20,
+                "transition": "edge_insertion_single",
+                "nu": {"x": 1, "c": 1, "e": 1, "y": 1},
+            }
+        })
+        deletion = AbsorbingEdgesTransition(cfg=cfg_deletion, **common)
+        insertion = EdgeInsertionTransition(
+            cfg=cfg_insertion, absorbing_edge_class=1, **common
+        )
+        permutation = torch.tensor([1, 0, 2, 3, 4])
+
+        for timestep in (1, 5, 10, 20):
+            t_int = torch.tensor([timestep])
+            for delete_q, insert_q in (
+                (deletion.get_Qt(t_int), insertion.get_Qt(t_int)),
+                (deletion.get_Qt_bar(t_int), insertion.get_Qt_bar(t_int)),
+            ):
+                permuted_edges = delete_q.E[:, permutation][:, :, permutation]
+                self.assertTrue(torch.allclose(insert_q.E, permuted_edges))
+                self.assertTrue(torch.allclose(insert_q.X, delete_q.X))
+                self.assertTrue(torch.allclose(insert_q.charges, delete_q.charges))
+
+    def test_single_bond_transition_accepts_joint_at_least_constraints(self):
+        model = DiscreteDenoisingDiffusion.__new__(DiscreteDenoisingDiffusion)
+        cfg = OmegaConf.create({
+            "model": {
+                "transition": "edge_insertion_single",
+                "constraints": [
+                    {"type": "ring_count_at_least", "min_rings": 1},
+                    {"type": "ring_length_at_least", "min_ring_length": 4},
+                ],
+            }
+        })
+        model.constraints = resolve_constraints(cfg.model)
+        model._validate_transition_projector_compatibility(cfg)
 
     def test_returned_tensor_metrics_and_reports(self):
         satisfied = dense_placeholder(nx.cycle_graph(5)).collapse(torch.tensor([]))

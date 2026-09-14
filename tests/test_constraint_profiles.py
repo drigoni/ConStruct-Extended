@@ -60,5 +60,32 @@ class ConstraintProfileTests(unittest.TestCase):
         self.assertGreater(resolved["train"]["early_stopping"]["patience"], 0)
 
 
+    def test_single_bond_training_config_matches_positive_marginal_baseline(self):
+        config_dir = pathlib.Path(__file__).parents[1] / "configs"
+        with initialize_config_dir(version_base="1.3", config_dir=str(config_dir)):
+            baseline = compose(
+                config_name="config",
+                overrides=["+experiment=training/qm9_no_constraint_edge_addition"],
+            )
+            single = compose(
+                config_name="config",
+                overrides=["+experiment=training/qm9_no_constraint_edge_addition_single"],
+            )
+
+        baseline = OmegaConf.to_container(baseline, resolve=True)
+        single = OmegaConf.to_container(single, resolve=True)
+        self.assertEqual(single["model"]["transition"], "edge_insertion_single")
+        self.assertEqual(
+            single["general"]["name"],
+            "qm9_no_constraint_edge_addition_single",
+        )
+        baseline["model"]["transition"] = single["model"]["transition"]
+        baseline["general"]["name"] = single["general"]["name"]
+        baseline["general"]["sampling_output_dir"] = single["general"][
+            "sampling_output_dir"
+        ]
+        self.assertEqual(single, baseline)
+
+
 if __name__ == "__main__":
     unittest.main()

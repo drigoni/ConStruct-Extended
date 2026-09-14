@@ -362,6 +362,13 @@ validity increase:
 python main.py +experiment=training/qm9_no_constraint_edge_addition
 ```
 
+For the matched deterministic-endpoint ablation, use the same model and
+training settings with every terminal edge fixed to the single-bond class:
+
+```bash
+python main.py +experiment=training/qm9_no_constraint_edge_addition_single
+```
+
 Continue an existing run with the same validity-based stopping policy:
 
 ```bash
