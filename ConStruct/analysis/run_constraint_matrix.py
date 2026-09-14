@@ -35,12 +35,25 @@ from ConStruct.metrics.sampling_molecular_metrics import (
     Molecule,
     compute_valid_molecules,
 )
+from ConStruct.analysis.fcd_matrix import (
+    build_fcd_evaluators,
+    evaluate_generated_smiles,
+    fcd_details_cacheable,
+    fcd_metric_key,
+    json_matrix,
+    load_or_build_reference_cache,
+    reference_fingerprint,
+    render_fcd_markdown,
+    save_fcd_heatmap,
+    unavailable_reference_bundle,
+    validation_reference_profiles,
+)
 from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique
 from ConStruct.projector.projector_utils import build_simple_graph_from_edge_tensor
 from ConStruct.utils import PlaceHolder
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 COUNT_LEVELS = (None, 1, 2)
 LENGTH_LEVELS = (None, 4, 5)
 QM9_NO_H_ATOM_DECODER = ["C", "N", "O", "F"]
@@ -94,6 +107,17 @@ METRICS = (
     ("ring_length_at_least_4_pct", "Maximum cycle length ≥ 4"),
     ("ring_length_at_least_5_pct", "Maximum cycle length ≥ 5"),
 )
+VALIDATION_REFERENCE_PROFILES = validation_reference_profiles(
+    PROFILES,
+    direction="at_least",
+    count_attribute="min_rings",
+    length_attribute="min_ring_length",
+)
+FCD_METRICS = tuple(
+    (fcd_metric_key(profile), f"FCD vs validation {profile.name}")
+    for profile in VALIDATION_REFERENCE_PROFILES
+)
+ALL_METRICS = METRICS + FCD_METRICS
 
 
 class ArtifactMismatchError(RuntimeError):
@@ -493,6 +517,7 @@ def evaluate_batches(
         "counts": counts,
         "metrics": metrics,
         "molecular_errors": {str(key): value for key, value in errors.items()},
+        "valid_smiles": valid,
     }
 
 
@@ -503,6 +528,7 @@ def _cell_cache_matches(
     seed: int,
     requested_samples: int,
     fingerprint: list[dict[str, Any]],
+    fcd_fingerprint: dict[str, Any],
 ) -> bool:
     return (
         cell.get("schema_version") == SCHEMA_VERSION
@@ -511,7 +537,9 @@ def _cell_cache_matches(
         and cell.get("seed") == seed
         and cell.get("requested_samples") == requested_samples
         and cell.get("source_fingerprint") == fingerprint
-        and set(cell.get("metrics", {})) == {key for key, _ in METRICS}
+        and cell.get("fcd_reference_fingerprint") == fcd_fingerprint
+        and set(cell.get("metrics", {})) == {key for key, _ in ALL_METRICS}
+        and fcd_details_cacheable(cell.get("fcd", {}))
     )
 
 
@@ -524,6 +552,8 @@ def evaluate_profile(
     seed: int,
     requested_samples: int,
     attempts: int,
+    reference_bundle: dict[str, Any],
+    fcd_evaluators: dict[str, Any],
 ) -> dict[str, Any]:
     sample_dir = output_root / profile.name / f"seed_{seed}"
     error_path = matrix_root / "errors" / f"metrics_{profile.name}.json"
@@ -548,11 +578,18 @@ def evaluate_profile(
         _write_error(error_path, "metrics", profile, 1, error)
         raise error
     fingerprint = _source_fingerprint(sample_dir)
+    fcd_fingerprint = reference_fingerprint(reference_bundle)
     cache_path = matrix_root / "cells" / f"{profile.name}.json"
     if cache_path.exists():
         cached = _read_json(cache_path)
         if _cell_cache_matches(
-            cached, profile, checkpoint, seed, requested_samples, fingerprint
+            cached,
+            profile,
+            checkpoint,
+            seed,
+            requested_samples,
+            fingerprint,
+            fcd_fingerprint,
         ):
             print(f"[metrics] reusing complete profile {profile.name}")
             return cached
@@ -560,6 +597,11 @@ def evaluate_profile(
     def run(_attempt: int):
         batches = load_trimmed_batches(sample_dir, requested_samples)
         result = evaluate_batches(batches, QM9_NO_H_ATOM_DECODER)
+        generated_smiles = result.pop("valid_smiles")
+        fcd_metrics, fcd_details = evaluate_generated_smiles(
+            generated_smiles, reference_bundle, fcd_evaluators
+        )
+        result["metrics"].update(fcd_metrics)
         cell = {
             "schema_version": SCHEMA_VERSION,
             "timestamp": _utc_timestamp(),
@@ -570,6 +612,8 @@ def evaluate_profile(
             "seed": seed,
             "requested_samples": requested_samples,
             "source_fingerprint": fingerprint,
+            "fcd_reference_fingerprint": fcd_fingerprint,
+            "fcd": fcd_details,
             **result,
         }
         _atomic_write_json(cache_path, cell)
@@ -735,6 +779,7 @@ def render_aggregate(
     length_cell_field: str = "enforced_min_ring_length",
     bound_label: str = "minimum",
     comparison_symbol: str = "≥",
+    reference_bundle: dict[str, Any] | None = None,
 ) -> None:
     metric_matrices = {
         metric: matrix_for_profiles(
@@ -764,7 +809,8 @@ def render_aggregate(
         },
         "cells": [cells[profile.name] for profile in profiles],
         "grids": {
-            metric: matrix.tolist() for metric, matrix in metric_matrices.items()
+            metric: json_matrix(matrix)
+            for metric, matrix in metric_matrices.items()
         },
     }
     _atomic_write_json(matrix_root / "metrics.json", payload)
@@ -795,6 +841,34 @@ def render_aggregate(
     for metric, title in metrics:
         slug = _metric_slug(metric)
         matrix = metric_matrices[metric]
+        if metric.startswith("fcd_vs_validation_"):
+            row_labels = [
+                _level_label(value, comparison_symbol) for value in count_levels
+            ]
+            column_labels = [
+                _level_label(value, comparison_symbol) for value in length_levels
+            ]
+            _atomic_write_text(
+                matrix_root / "grids" / f"{slug}.md",
+                render_fcd_markdown(
+                    title,
+                    matrix,
+                    row_labels,
+                    column_labels,
+                    f"Enforced {bound_label} ring count",
+                ),
+            )
+            for suffix in (".png", ".pdf"):
+                save_fcd_heatmap(
+                    matrix_root / "heatmaps" / f"{slug}{suffix}",
+                    title,
+                    matrix,
+                    row_labels,
+                    column_labels,
+                    f"Enforced {bound_label} maximum-cycle length",
+                    f"Enforced {bound_label} ring count",
+                )
+            continue
         _atomic_write_text(
             matrix_root / "grids" / f"{slug}.md",
             _render_markdown_grid(
@@ -825,22 +899,74 @@ def render_aggregate(
             comparison_symbol,
         )
 
+    if reference_bundle is not None:
+        unavailable_pairings = sum(
+            detail.get("status") != "ok"
+            for profile in profiles
+            for detail in cells[profile.name]["fcd"].values()
+        )
+        fcd_grids = {
+            metric: json_matrix(metric_matrices[metric])
+            for metric, _ in metrics
+            if metric.startswith("fcd_vs_validation_")
+        }
+        fcd_payload = {
+            "schema_version": 1,
+            "timestamp": _utc_timestamp(),
+            "checkpoint": _normalized_checkpoint(checkpoint),
+            "seed": seed,
+            "requested_samples_per_cell": requested_samples,
+            "status": "complete" if unavailable_pairings == 0 else "partial",
+            "unavailable_pairing_count": unavailable_pairings,
+            "computation": {
+                "method": "SamplingMolecularMetrics.compute_fcd",
+                "generated_molecules": "valid canonical SMILES with duplicates retained",
+                "validation_molecules": "valid unique canonical SMILES",
+                "generated_constraint_filtering": False,
+            },
+            "row_axis": payload["row_axis"],
+            "column_axis": payload["column_axis"],
+            "generated_profiles": [profile.name for profile in profiles],
+            "generated_sources": {
+                profile.name: cells[profile.name]["source_fingerprint"]
+                for profile in profiles
+            },
+            "validation_reference": reference_bundle["metadata"],
+            "reference_cache": reference_bundle["cache_path"],
+            "pairings": {
+                profile.name: cells[profile.name]["fcd"] for profile in profiles
+            },
+            "grids": fcd_grids,
+        }
+        _atomic_write_json(matrix_root / "fcd_metrics.json", fcd_payload)
+
 
 def _manifest_request(
     checkpoint: Path,
     experiment: str,
     seed: int,
     requested_samples: int,
+    validation_smiles: Path | None = None,
+    fcd_reference_cache: Path | None = None,
 ) -> dict[str, Any]:
-    return {
+    request = {
         "schema_version": SCHEMA_VERSION,
         "checkpoint": _normalized_checkpoint(checkpoint),
         "experiment": experiment,
         "seed": seed,
         "requested_samples_per_cell": requested_samples,
         "profiles": [profile.name for profile in PROFILES],
-        "metrics": [metric for metric, _ in METRICS],
+        "metrics": [metric for metric, _ in ALL_METRICS],
     }
+    if validation_smiles is not None and fcd_reference_cache is not None:
+        request["fcd"] = {
+            "validation_smiles": str(validation_smiles.resolve()),
+            "reference_cache": str(fcd_reference_cache.resolve()),
+            "validation_profiles": [
+                profile.as_dict() for profile in VALIDATION_REFERENCE_PROFILES
+            ],
+        }
+    return request
 
 
 def initialize_manifest(
@@ -849,16 +975,45 @@ def initialize_manifest(
     experiment: str,
     seed: int,
     requested_samples: int,
+    validation_smiles: Path | None = None,
+    fcd_reference_cache: Path | None = None,
 ) -> dict[str, Any]:
-    request = _manifest_request(checkpoint, experiment, seed, requested_samples)
+    request = _manifest_request(
+        checkpoint,
+        experiment,
+        seed,
+        requested_samples,
+        validation_smiles,
+        fcd_reference_cache,
+    )
     path = matrix_root / "manifest.json"
     if path.exists():
         existing = _read_json(path)
         existing_request = {key: existing.get(key) for key in request}
-        if existing_request != request:
+        legacy_core = (
+            existing.get("schema_version") == 1
+            and all(
+                existing.get(key) == request[key]
+                for key in (
+                    "checkpoint",
+                    "experiment",
+                    "seed",
+                    "requested_samples_per_cell",
+                    "profiles",
+                )
+            )
+            and existing.get("metrics") == [metric for metric, _ in METRICS]
+        )
+        if existing_request != request and not legacy_core:
             raise ArtifactMismatchError(
                 f"Matrix manifest {path} belongs to a different request."
             )
+        if legacy_core:
+            existing.update(request)
+            existing["metrics_complete"] = False
+            existing["upgraded_from_schema_version"] = 1
+            existing["updated_at"] = _utc_timestamp()
+            _atomic_write_json(path, existing)
         return existing
     manifest = {
         **request,
@@ -884,6 +1039,14 @@ def run_matrix(args: argparse.Namespace) -> Path:
     if not checkpoint.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
     output_root = Path(args.output_root).expanduser().resolve()
+    validation_smiles = Path(args.validation_smiles).expanduser()
+    if not validation_smiles.is_absolute():
+        validation_smiles = repo_root / validation_smiles
+    validation_smiles = validation_smiles.resolve()
+    fcd_reference_cache = Path(args.fcd_reference_cache).expanduser()
+    if not fcd_reference_cache.is_absolute():
+        fcd_reference_cache = repo_root / fcd_reference_cache
+    fcd_reference_cache = fcd_reference_cache.resolve()
     matrix_root = output_root / "matrix" / f"seed_{args.seed}"
     matrix_root.mkdir(parents=True, exist_ok=True)
     initialize_manifest(
@@ -892,6 +1055,8 @@ def run_matrix(args: argparse.Namespace) -> Path:
         args.experiment,
         args.seed,
         args.samples,
+        validation_smiles,
+        fcd_reference_cache,
     )
 
     if args.phase in {"all", "generate"}:
@@ -915,6 +1080,31 @@ def run_matrix(args: argparse.Namespace) -> Path:
         update_manifest(matrix_root, generation_complete=True)
 
     if args.phase in {"all", "metrics"}:
+        try:
+            reference_bundle = load_or_build_reference_cache(
+                validation_smiles,
+                fcd_reference_cache,
+                VALIDATION_REFERENCE_PROFILES,
+            )
+            _clear_error(matrix_root / "errors" / "fcd_reference.json")
+        except Exception as error:
+            reference_bundle = unavailable_reference_bundle(
+                VALIDATION_REFERENCE_PROFILES,
+                validation_smiles,
+                fcd_reference_cache,
+                error,
+            )
+            _write_error(
+                matrix_root / "errors" / "fcd_reference.json",
+                "fcd_reference",
+                None,
+                1,
+                error,
+                traceback_text=traceback.format_exc(),
+            )
+        fcd_evaluators = build_fcd_evaluators(
+            reference_bundle, QM9_NO_H_ATOM_DECODER
+        )
         cells = {}
         for profile in PROFILES:
             cells[profile.name] = evaluate_profile(
@@ -925,19 +1115,38 @@ def run_matrix(args: argparse.Namespace) -> Path:
                 seed=args.seed,
                 requested_samples=args.samples,
                 attempts=args.max_attempts,
+                reference_bundle=reference_bundle,
+                fcd_evaluators=fcd_evaluators,
             )
 
         error_path = matrix_root / "errors" / "aggregate.json"
         _retry(
             lambda _attempt: render_aggregate(
-                matrix_root, cells, checkpoint, args.seed, args.samples
+                matrix_root,
+                cells,
+                checkpoint,
+                args.seed,
+                args.samples,
+                metrics=ALL_METRICS,
+                reference_bundle=reference_bundle,
             ),
             attempts=args.max_attempts,
             error_path=error_path,
             stage="aggregate",
             profile=None,
         )
-        update_manifest(matrix_root, generation_complete=True, metrics_complete=True)
+        unavailable_pairings = sum(
+            detail.get("status") != "ok"
+            for cell in cells.values()
+            for detail in cell["fcd"].values()
+        )
+        update_manifest(
+            matrix_root,
+            generation_complete=True,
+            metrics_complete=True,
+            fcd_complete=unavailable_pairings == 0,
+            fcd_unavailable_pairings=unavailable_pairings,
+        )
 
     return matrix_root
 
@@ -947,7 +1156,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Generate the nine predefined QM9 projection profiles and "
-            "cross-evaluate five metrics over every saved sample set."
+            "cross-evaluate structural metrics and validation FCD over every "
+            "saved sample set."
         )
     )
     parser.add_argument("--checkpoint", required=True, help="Model checkpoint path")
@@ -966,6 +1176,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="samples/qm9_no_constraint_edge_addition",
     )
     parser.add_argument("--repo-root", default=str(repo_root))
+    parser.add_argument(
+        "--validation-smiles",
+        default="data/qm9/processed/val_smiles_noh.pickle",
+        help="QM9 validation SMILES pickle used to build FCD reference profiles.",
+    )
+    parser.add_argument(
+        "--fcd-reference-cache",
+        default="data/qm9/processed/val_fcd_reference_profiles_at_least.npz",
+        help="Shared provenance-checked validation FCD statistics cache.",
+    )
     parser.add_argument(
         "--force-profile",
         action="append",

@@ -32,6 +32,14 @@ _Avoid_: Projector, generation constraint
 The comparison of every projection profile against the same complete set of cross-evaluation targets.
 _Avoid_: Grid search, hyperparameter sweep
 
+**Validation reference profile**:
+A conjunction of structural predicates that selects a QM9 validation cohort for distributional comparison.
+_Avoid_: Filtered dataset, projection profile
+
+**FCD cross-matrix**:
+The comparison of every generated projection profile against every validation reference profile using Fréchet ChemNet Distance.
+_Avoid_: Matched FCD, conditional generation score
+
 **Absorbing edge label**:
 An edge category toward which every pair label converges at the terminal point of an absorbing edge diffusion.
 _Avoid_: Terminal bond, noise bond

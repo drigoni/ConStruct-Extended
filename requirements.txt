@@ -1,4 +1,5 @@
 hydra-core
+fcd==1.2.2
 imageio
 matplotlib
 networkx

@@ -432,6 +432,10 @@ After the checkpoint is available, one command generates any missing cells in
 the predefined `{none, 1, 2}` ring-count by `{none, 4, 5}` maximum-cycle-length
 grid and then cross-evaluates every cell against the same five targets:
 molecular validity, ring count ≥1 and ≥2, and maximum cycle length ≥4 and ≥5.
+It also computes a 9×9 validation-FCD cross-matrix: each of nine heatmaps fixes
+one conjunctively filtered validation reference profile and compares all nine
+generated projection profiles against it. Generated molecules are not filtered;
+FCD uses all valid canonical generated molecules and retains duplicates.
 
 ```bash
 python -m ConStruct.analysis.run_constraint_matrix \
@@ -459,6 +463,13 @@ python -m ConStruct.analysis.run_constraint_matrix \
   --phase metrics
 ```
 
+The metrics phase defaults to `data/qm9/processed/val_smiles_noh.pickle` and a
+shared lower-bound reference cache at
+`data/qm9/processed/val_fcd_reference_profiles_at_least.npz`. Override these
+with `--validation-smiles` and `--fcd-reference-cache`. Existing schema-v1
+matrices are upgraded in place: derived metric artifacts are recomputed from
+the saved graph pickles, but generation is not rerun.
+
 Each failed stage is attempted three times. A persistent failure exits with a
 structured record under `matrix/seed_<seed>/errors/`; rerunning resumes from
 that profile without repeating completed cells. To deliberately replace a
@@ -472,10 +483,11 @@ artifacts are written under
 
 - `manifest.json` records checkpoint, seed, sample count, profiles, and phase
   completion.
-- `cells/*.json` caches each profile's five post-hoc metrics.
-- `metrics.json` and `metrics.csv` contain the complete matrix.
-- `grids/*.md` contains five annotated 3×3 tables.
-- `heatmaps/*.{png,pdf}` contains five fixed-scale 0–100 heatmaps.
+- `cells/*.json` caches each profile's structural and validation-FCD metrics.
+- `metrics.json` and `metrics.csv` contain the complete structural and FCD matrices.
+- `fcd_metrics.json` records all 81 FCD pairings, cohort sizes, errors, and provenance.
+- `grids/*.md` contains structural tables and nine validation-FCD tables.
+- `heatmaps/*.{png,pdf}` contains the structural heatmaps and nine independently scaled validation-FCD heatmaps.
 - `logs/` and `errors/` preserve subprocess and failure diagnostics.
 
 Only load generated pickle files produced locally by a trusted run; pickle is
@@ -502,7 +514,10 @@ python -m ConStruct.analysis.run_edge_deletion_matrix \
 
 The resumable samples, cell metrics, grids, and heatmaps are written below
 `samples/qm9_no_constraint_edge_absorbing/`, independently from the
-edge-insertion matrix.
+edge-insertion matrix. Its validation-FCD references use the upper-bound
+profiles and the shared cache
+`data/qm9/processed/val_fcd_reference_profiles_at_most.npz`; the same CLI
+overrides and metrics-only upgrade behavior apply.
 
 
 ---
