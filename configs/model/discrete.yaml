@@ -12,7 +12,8 @@ constraints: []  # Canonical composable inference targets; see configs/constrain
 max_rings: 0     # For ring_count_at_most: maximum number of rings allowed
 max_ring_length: 6  # For ring_length_at_most: maximum ring size allowed
 
-# Edge-insertion constraints (use with edge_insertion transition)
+# Edge-insertion constraints (use with edge_insertion or edge_insertion_single)
+resample_blocked_deletions: false  # true: sample positive classes from reverse posterior; false: restore previous class
 min_rings: 2     # For ring_count_at_least: minimum number of rings required
 min_ring_length: 4  # For ring_length_at_least: minimum ring size required
 

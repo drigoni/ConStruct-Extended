@@ -330,7 +330,11 @@ class AbstractProjector(abc.ABC):
             # because we need to add edges to satisfy constraints
             self.nx_graphs_list.append(nx_graph)
 
-    def project(self, z_s: PlaceHolder):
+    def project(self, z_s: PlaceHolder, edge_probabilities=None, resample_blocked_deletions=False):
+        """Project topology; optionally resample protected edges from the posterior."""
+        if resample_blocked_deletions and self.edge_mutation == "remove":
+            if edge_probabilities is None or edge_probabilities.shape != z_s.E.shape:
+                raise ValueError("Blocked-deletion resampling requires matching edge probabilities.")
         z_s_adj = get_adj_matrix(z_s)
 
         if self.edge_mutation == "add":
@@ -369,8 +373,12 @@ class AbstractProjector(abc.ABC):
                         z_s.E[graph_idx, u, v] = no_edge_features
                         z_s.E[graph_idx, v, u] = no_edge_features
                     else:
-                        z_s.E[graph_idx, u, v] = prev_edge_features
-                        z_s.E[graph_idx, v, u] = prev_edge_features
+                        restored = self._blocked_deletion_features(
+                            prev_edge_features, edge_probabilities, graph_idx, u, v,
+                            resample_blocked_deletions,
+                        )
+                        z_s.E[graph_idx, u, v] = restored
+                        z_s.E[graph_idx, v, u] = restored
                     self.total_blocked += 1
                     continue
 
@@ -388,8 +396,12 @@ class AbstractProjector(abc.ABC):
                         z_s.E[graph_idx, v, u] = no_edge_features
                     else:
                         nx_graph.add_edge(u, v)
-                        z_s.E[graph_idx, u, v] = prev_edge_features
-                        z_s.E[graph_idx, v, u] = prev_edge_features
+                        restored = self._blocked_deletion_features(
+                            prev_edge_features, edge_probabilities, graph_idx, u, v,
+                            resample_blocked_deletions,
+                        )
+                        z_s.E[graph_idx, u, v] = restored
+                        z_s.E[graph_idx, v, u] = restored
 
                     if self.can_block_edges:
                         self.blocked_edges[graph_idx].add(e)
@@ -399,6 +411,26 @@ class AbstractProjector(abc.ABC):
 
         self.z_t_adj = get_adj_matrix(z_s)
         self.z_t_E = z_s.E.clone()
+
+
+    @staticmethod
+    def _blocked_deletion_features(previous, probabilities, graph_idx, u, v, resample):
+        if not resample:
+            return previous
+        positive = probabilities[graph_idx, u, v, 1:]
+        if not torch.isfinite(positive).all() or (positive < 0).any():
+            raise ValueError("Positive edge probabilities must be finite and non-negative.")
+        mass = positive.sum()
+        if mass == 0:
+            # Conditioning on presence is undefined; preserve the protected edge.
+            return previous
+        conditional = positive / mass
+        # Gumbel-max keeps zero-probability classes outside the sampling support.
+        scores = conditional.log() - torch.empty_like(conditional).exponential_().log()
+        edge_class = scores.argmax() + 1
+        features = torch.zeros_like(previous)
+        features[edge_class] = 1
+        return features
 
 
 def has_no_cycles(nx_graph):
@@ -685,7 +717,7 @@ class RingLengthAtLeastProjector(AbstractProjector):
     Structural Constraint:
     - Search unique simple cycles and stop as soon as one has length at least N
     - Block edge removals that would eliminate every sufficiently long cycle
-    - Preserve the exact previous bond type when a removal is blocked
+    - Preserve adjacency when a removal is blocked; optionally resample its bond type
     
     CRITICAL: Chemical validity (valency, connectivity, atom types) is NOT enforced.
     These properties are measured separately after generation using RDKit.

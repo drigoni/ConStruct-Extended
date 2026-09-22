@@ -51,3 +51,11 @@ _Avoid_: Standard insertion, random-edge insertion
 **Single-bond edge insertion**:
 A topology-insertion diffusion whose sole absorbing edge label is the single-bond category.
 _Avoid_: Pure insertion, symmetric insertion
+
+**Blocked deletion**:
+A proposed removal of a present edge that would violate an enforced structural constraint.
+_Avoid_: Failed denoising update
+
+**Conditional positive-class sampling**:
+Choosing a present-edge class from an edge distribution conditioned on edge presence when a deletion is blocked.
+_Avoid_: Forced single bond, chemical repair

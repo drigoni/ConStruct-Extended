@@ -327,7 +327,7 @@ class NoiseModel:
             node_mask=node_mask,
         ).mask(node_mask)
 
-    def sample_zs_from_zt_and_pred(self, z_t, pred, s_int):
+    def sample_zs_from_zt_and_pred(self, z_t, pred, s_int, return_edge_probabilities=False):
         """Samples from zs ~ p(zs | zt). Only used during sampling."""
         bs, n, dxs = z_t.X.shape
         node_mask = z_t.node_mask
@@ -432,6 +432,8 @@ class NoiseModel:
             node_mask=node_mask,
         ).mask(node_mask)
 
+        if return_edge_probabilities:
+            return z_s, prob_E
         return z_s
 
 

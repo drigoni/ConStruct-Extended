@@ -28,7 +28,11 @@ class CleanSamplingBoundaryTests(unittest.TestCase):
             captured['E']=probE.clone()
             return original(probX,probE,prob_charges,node_mask)
         with patch.object(diffusion_utils,'sample_discrete_features',side_effect=capture):
-            noise.sample_zs_from_zt_and_pred(z,pred,torch.tensor([[s]]))
+            sampled, posterior = noise.sample_zs_from_zt_and_pred(
+                z, pred, torch.tensor([[s]]), return_edge_probabilities=True
+            )
+        torch.testing.assert_close(posterior[0,0,1], captured["E"][0,0,1])
+        self.assertEqual(sampled.E.shape, z.E.shape)
         return captured['E'][0,0,1]
 
     def test_oracle_final_step_is_clean_for_all_edge_endpoints(self):

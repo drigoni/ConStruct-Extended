@@ -858,6 +858,9 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                     } if constraint_type else None,
                     "constraints": constraints_metadata(active_constraints),
                     "projection_enabled": self.use_projection,
+                    "resample_blocked_deletions": bool(
+                        getattr(self.cfg.model, "resample_blocked_deletions", False)
+                    ),
                     "requested_samples": requested_samples,
                     "generated_samples": generated_samples,
                     "device_count": world_size,
@@ -1090,6 +1093,13 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         # Create a constraint-preserving object only when projection is enabled.
         rev_projector = self._build_reverse_projector(z_t)
 
+        resample_blocked_deletions = (
+            rev_projector is not None
+            and rev_projector.edge_mutation == "remove"
+            and self.cfg.model.transition in {"edge_insertion", "edge_insertion_single"}
+            and getattr(self.cfg.model, "resample_blocked_deletions", False)
+        )
+
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
         
         # Timing for entire reverse diffusion process
@@ -1104,7 +1114,13 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             
             # Time the model forward pass
             model_start_time = time.time()
-            z_s = self.sample_zs_from_zt(z_t, s_array)
+            edge_probabilities = None
+            if resample_blocked_deletions:
+                z_s, edge_probabilities = self.sample_zs_from_zt(
+                    z_t, s_array, return_edge_probabilities=True
+                )
+            else:
+                z_s = self.sample_zs_from_zt(z_t, s_array)
             model_time = time.time() - model_start_time
             total_model_time += model_time
 
@@ -1118,7 +1134,13 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 
                 # Time the projection step
                 projection_start_time = time.time()
-                rev_projector.project(z_s)
+                if resample_blocked_deletions:
+                    rev_projector.project(
+                        z_s, edge_probabilities=edge_probabilities,
+                        resample_blocked_deletions=True,
+                    )
+                else:
+                    rev_projector.project(z_s)
                 projection_time = time.time() - projection_start_time
                 total_projection_time += projection_time
                 
@@ -1431,12 +1453,13 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
 
         return final_batch
 
-    def sample_zs_from_zt(self, z_t, s_int):
+    def sample_zs_from_zt(self, z_t, s_int, return_edge_probabilities=False):
         """Samples from zs ~ p(zs | zt). Only used during sampling.
         if last_step, return the graph prediction as well"""
         pred = self.forward(z_t)
         return self.noise_model.sample_zs_from_zt_and_pred(
-            z_t=z_t, pred=pred, s_int=s_int
+            z_t=z_t, pred=pred, s_int=s_int,
+            return_edge_probabilities=return_edge_probabilities,
         )
 
     def sample_n_graphs(
