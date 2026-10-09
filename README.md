@@ -15,6 +15,7 @@ This repository is a **fork and extension** of the original [ConStruct](https://
 - **Ring-Based Constraints**: Extended the model to include comprehensive ring count and ring length constraints
 - **Molecular Dataset Focus**: Extensive testing and validation on molecular datasets, starting with QM9
 - **Edge-Deletion Constraints**: Implemented "at most" constraints for ring count and ring length
+- **Edge-Insertion Constraints**: Implemented "at least" constraints for ring count and ring length
 - **Organized Experiment Structure**: Created systematic experiment configurations for debug and thesis-level testing
 - **SLURM Integration**: Added comprehensive SLURM job scripts for cluster execution
 - **Constraint Validation**: Implemented robust constraint satisfaction monitoring and validation
@@ -221,8 +222,6 @@ If all these work: **your env is cluster-proof**.
 ### 🚀 **Organized Experiment Structure**
 
 The codebase includes a comprehensive, organized experiment structure for testing different constraint types. 
-
-**Note**: Edge-insertion constraints are documented but not yet implemented in the current codebase.
 
 #### **Directory Structure**
 ```

@@ -404,14 +404,20 @@ class SamplingMolecularMetrics(nn.Module):
 
         # Validity, uniqueness, novelty
         all_generated_smiles, metrics = self.evaluate(molecules)
-        
-        # No chemical validation metrics in initial commit - removed to match exactly
+        suppress_artifacts = bool(
+            self.cfg is not None
+            and getattr(self.cfg.general, "suppress_metric_artifacts", False)
+        )
+        skip_fcd = bool(
+            self.cfg is not None
+            and getattr(self.cfg.general, "skip_standard_fcd", False)
+        )
 
-        # Calculate FCD BEFORE table generation
-        to_log_fcd = self.compute_fcd(generated_smiles=all_generated_smiles)
-        metrics.update(to_log_fcd)
+        # FCD is supplied by the suite single-pass cache in offline mode.
+        if not skip_fcd:
+            metrics.update(self.compute_fcd(generated_smiles=all_generated_smiles))
 
-        if len(all_generated_smiles) > 0 and local_rank == 0:
+        if not suppress_artifacts and len(all_generated_smiles) > 0 and local_rank == 0:
             print("Some generated smiles: " + " ".join(all_generated_smiles[:10]))
             # --- Constraint check integration ---
             constraint_type = getattr(self.dataset_infos, "constraint_type", None)
@@ -626,26 +632,25 @@ class SamplingMolecularMetrics(nn.Module):
                 
                 # Chemistry metrics displayed in console only
 
-        # Save in any case in the graphs folder
-        os.makedirs("graphs", exist_ok=True)
-        textfile = open(
-            f"graphs/valid_unique_molecules_e{current_epoch}_GR{local_rank}.txt", "w"
-        )
-        textfile.writelines(all_generated_smiles)
-        textfile.close()
-        # Save in the root folder if test_model
-        if self.test:
-            filename = f"final_smiles_GR{local_rank}_{0}.txt"
-            for i in range(2, 10):
-                if os.path.exists(filename):
-                    filename = f"final_smiles_GR{local_rank}_{i}.txt"
-                else:
-                    break
-            with open(filename, "w") as fp:
-                for smiles in all_generated_smiles:
-                    # write each item on a new line
-                    fp.write("%s\n" % smiles)
-                print(f"All smiles saved on rank {local_rank}")
+        if not suppress_artifacts:
+            # Legacy reports remain available outside the final suite.
+            os.makedirs("graphs", exist_ok=True)
+            textfile = open(
+                f"graphs/valid_unique_molecules_e{current_epoch}_GR{local_rank}.txt", "w"
+            )
+            textfile.writelines(all_generated_smiles)
+            textfile.close()
+            if self.test:
+                filename = f"final_smiles_GR{local_rank}_{0}.txt"
+                for i in range(2, 10):
+                    if os.path.exists(filename):
+                        filename = f"final_smiles_GR{local_rank}_{i}.txt"
+                    else:
+                        break
+                with open(filename, "w") as fp:
+                    for smiles in all_generated_smiles:
+                        fp.write("%s\n" % smiles)
+                    print(f"All smiles saved on rank {local_rank}")
         # Compute statistics
         stat = (
             self.dataset_infos.statistics["test"]
@@ -677,7 +682,8 @@ class SamplingMolecularMetrics(nn.Module):
         #     print(f"Molecular metrics computed.")
 
         # Track constraint violations
-        constraint_violations = self._track_constraint_violations(generated_graphs, local_rank)
+        if not suppress_artifacts:
+            self._track_constraint_violations(generated_graphs, local_rank)
         
         # Compare projector vs evaluation logic for debugging
         constraint_type = None

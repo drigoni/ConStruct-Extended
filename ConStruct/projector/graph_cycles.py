@@ -23,7 +23,74 @@ __all__ = [
     "max_ring_length_exceeds",
     "fast_ring_count_precheck",
     "fast_ring_length_precheck",
+    "bitmask_cycle_summary",
+    "topology_bitmask",
 ]
+
+
+def topology_bitmask(edge_matrix, node_count: int | None = None) -> tuple[int, int]:
+    """Return ``(n, bits)`` for the upper-triangle topology of a small graph.
+
+    ``edge_matrix`` may contain bond classes or one-hot edge features. Class
+    zero means no edge; every positive class is treated as present.
+    """
+    import numpy as np
+
+    edges = np.asarray(edge_matrix)
+    if edges.ndim == 3:
+        edges = edges.argmax(axis=-1)
+    n = int(node_count if node_count is not None else edges.shape[0])
+    bits = 0
+    shift = 0
+    for u in range(n):
+        for v in range(u + 1, n):
+            if int(edges[u, v]) != 0:
+                bits |= 1 << shift
+            shift += 1
+    return n, bits
+
+
+def bitmask_cycle_summary(node_count: int, edge_bits: int) -> tuple[int, int]:
+    """Count all unique undirected simple cycles and their maximum length.
+
+    The DFS fixes the smallest vertex of each cycle as its root and accepts
+    only one of the two orientations. This is exact and intentionally tuned
+    for QM9's at-most-nine-heavy-atom graphs.
+    """
+    n = int(node_count)
+    adjacency = [0] * n
+    shift = 0
+    for u in range(n):
+        for v in range(u + 1, n):
+            if edge_bits & (1 << shift):
+                adjacency[u] |= 1 << v
+                adjacency[v] |= 1 << u
+            shift += 1
+
+    count = 0
+    maximum = 0
+    for start in range(n):
+        allowed = ((1 << n) - 1) & ~((1 << (start + 1)) - 1)
+
+        def visit(current: int, visited: int, first: int, length: int) -> None:
+            nonlocal count, maximum
+            candidates = adjacency[current] & allowed & ~visited
+            while candidates:
+                bit = candidates & -candidates
+                candidates ^= bit
+                nxt = bit.bit_length() - 1
+                visit(nxt, visited | bit, first, length + 1)
+            if length >= 3 and (adjacency[current] & (1 << start)) and first < current:
+                count += 1
+                maximum = max(maximum, length)
+
+        neighbors = adjacency[start] & allowed
+        while neighbors:
+            bit = neighbors & -neighbors
+            neighbors ^= bit
+            first = bit.bit_length() - 1
+            visit(first, (1 << start) | bit, first, 2)
+    return count, maximum
 
 
 def _canonical_cycle(cycle: List[int]) -> Tuple[int, ...]:

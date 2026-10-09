@@ -92,7 +92,7 @@ class ValidationReferenceTests(unittest.TestCase):
                 side_effect=predictions,
             ) as get_predictions:
                 first = load_or_build_reference_cache(source, cache, profiles)
-                self.assertEqual(get_predictions.call_count, 2)
+                self.assertEqual(get_predictions.call_count, 1)
                 self.assertEqual(first["statistics"]["full"]["molecule_count"], 3)
                 self.assertEqual(first["statistics"]["ring"]["molecule_count"], 2)
                 self.assertEqual(first["statistics"]["ring4"]["molecule_count"], 1)
@@ -104,7 +104,7 @@ class ValidationReferenceTests(unittest.TestCase):
                 with source.open("wb") as handle:
                     pickle.dump({"C", "CC", "C1CC1", "C1CCC1"}, handle)
                 load_or_build_reference_cache(source, cache, profiles)
-                self.assertEqual(get_predictions.call_count, 2)
+                self.assertEqual(get_predictions.call_count, 1)
 
 
 class LiteralFCDReuseTests(unittest.TestCase):

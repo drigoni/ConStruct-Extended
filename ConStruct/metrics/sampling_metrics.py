@@ -356,7 +356,7 @@ class SamplingMetrics(nn.Module):
         if self.dataset_infos.is_molecular:
             for key in ["fcd score"]:  # TODO: Add more metrics?
                 ratios[f"{log_key}_ratio/{key}"] = compute_ratio(
-                    generated=generated_metrics[f"{log_key}_sampling/{key}"],
+                    generated=generated_metrics.get(f"{log_key}_sampling/{key}"),
                     reference=reference_metrics[f"val_sampling/{key}"],
                 )
             valid_ratios = [value for value in ratios.values() if value is not None]

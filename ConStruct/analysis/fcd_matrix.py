@@ -24,7 +24,7 @@ from ConStruct.metrics.sampling_molecular_metrics import SamplingMolecularMetric
 from ConStruct.projector.graph_cycles import enumerate_simple_cycles_unique
 
 
-REFERENCE_CACHE_SCHEMA_VERSION = 1
+REFERENCE_CACHE_SCHEMA_VERSION = 2
 
 
 def utc_timestamp() -> str:
@@ -228,6 +228,7 @@ def load_or_build_reference_cache(
     validation_smiles: Path,
     cache_path: Path,
     profiles: tuple[ValidationReferenceProfile, ...],
+    model=None,
 ) -> dict[str, Any]:
     validation_smiles = validation_smiles.expanduser().resolve()
     cache_path = cache_path.expanduser().resolve()
@@ -243,33 +244,47 @@ def load_or_build_reference_cache(
         validation_smiles
     )
     properties = [_cycle_properties(smile) for smile in canonical]
-    model = fcd.load_ref_model()
-    arrays: dict[str, Any] = {}
+    model = model if model is not None else fcd.load_ref_model()
+    activations = fcd.get_predictions(model, canonical, n_jobs=0)
+    if len(activations) != len(canonical):
+        raise ValueError("ChemNet activations are not row-aligned with validation SMILES")
+    arrays: dict[str, Any] = {
+        "canonical_smiles": np.asarray(canonical),
+        "cycle_counts": np.asarray([value[0] for value in properties], dtype=np.int16),
+        "max_cycle_lengths": np.asarray([value[1] for value in properties], dtype=np.int16),
+        "chemnet_activations": np.asarray(activations),
+    }
     statistics: dict[str, dict[str, Any]] = {}
     metadata_statistics: dict[str, dict[str, Any]] = {}
+    moments_by_mask: dict[bytes, tuple[np.ndarray, np.ndarray, str]] = {}
 
     for profile in profiles:
-        subset = [
-            smile
-            for smile, (ring_count, max_cycle_length) in zip(canonical, properties)
-            if profile_matches(profile, ring_count, max_cycle_length)
-        ]
+        mask = np.asarray([
+            profile_matches(profile, ring_count, max_cycle_length)
+            for ring_count, max_cycle_length in properties
+        ], dtype=bool)
+        subset_activations = activations[mask]
         entry: dict[str, Any] = {
             "profile": profile.as_dict(),
-            "molecule_count": len(subset),
+            "molecule_count": int(mask.sum()),
         }
         mu_fcd = None
         sigma_fcd = None
-        if len(subset) < 2:
+        if len(subset_activations) < 2:
             entry.update(
                 status="unavailable",
                 error="fewer_than_two_validation_molecules",
             )
         else:
             try:
-                activations = fcd.get_predictions(model, subset, n_jobs=0)
-                mu_fcd = np.mean(activations, axis=0)
-                sigma_fcd = np.cov(activations.T)
+                mask_key = mask.tobytes()
+                if mask_key in moments_by_mask:
+                    mu_fcd, sigma_fcd, reused_from = moments_by_mask[mask_key]
+                    entry["reused_statistics_from"] = reused_from
+                else:
+                    mu_fcd = np.mean(subset_activations, axis=0)
+                    sigma_fcd = np.cov(subset_activations.T)
+                    moments_by_mask[mask_key] = (mu_fcd, sigma_fcd, profile.name)
                 if not np.isfinite(mu_fcd).all() or not np.isfinite(
                     sigma_fcd
                 ).all():

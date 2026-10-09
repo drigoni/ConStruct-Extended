@@ -322,6 +322,38 @@ class SamplingModeTests(unittest.TestCase):
             )
 
 
+    def test_strict_generation_stops_before_metrics(self):
+        with tempfile.TemporaryDirectory() as output_dir:
+            cfg = sampling_cfg()
+            cfg.general.sampling_output_dir = output_dir
+            cfg.general.final_model_samples_to_generate = 1
+            cfg.general.final_model_samples_to_save = 0
+            cfg.general.final_model_chains_to_save = 0
+            cfg.general.strict_generation = True
+            cfg.general.trajectory_samples = 0
+            cfg.model.transition = "absorbing_edges"
+            batch = PlaceHolder(
+                X=torch.zeros((1, 1), dtype=torch.long),
+                charges=torch.zeros((1, 1), dtype=torch.long),
+                E=torch.zeros((1, 1, 1), dtype=torch.long),
+                y=None,
+                node_mask=torch.ones((1, 1), dtype=torch.bool),
+            )
+            metrics = mock.Mock()
+            strategy = mock.Mock()
+            trainer = SimpleNamespace(world_size=1, num_devices=1, strategy=strategy)
+            harness = SimpleNamespace(
+                cfg=cfg, trainer=trainer, _trainer=trainer, global_rank=0,
+                local_rank=0, T=500, collapse_charges=torch.tensor([-1, 0, 1]),
+                test_sampling_metrics=metrics, print=lambda *args, **kwargs: None,
+                sample_n_graphs=mock.Mock(return_value=[batch]),
+            )
+            DiscreteDenoisingDiffusion._run_final_sampling(harness, sampling_only=True)
+            metrics.compute_all_metrics.assert_not_called()
+            self.assertTrue(os.path.isfile(os.path.join(output_dir, "strict_generation_complete.json")))
+            self.assertFalse(os.path.exists(os.path.join(output_dir, "sampling_metrics.json")))
+
+
 class FCDStabilityTests(unittest.TestCase):
     def test_stable_frechet_distance_matches_diagonal_gaussians(self):
         distance = _stable_frechet_distance(
@@ -384,6 +416,19 @@ class FCDStabilityTests(unittest.TestCase):
             harness,
             reference_metrics={"val_sampling/fcd score": -1},
             generated_metrics={"test_sampling/fcd score": -1},
+        )
+        self.assertIsNone(ratios["test_ratio/fcd score"])
+        self.assertIsNone(ratios["test_ratio/average"])
+
+    def test_missing_generated_fcd_leaves_ratio_unavailable(self):
+        harness = SimpleNamespace(
+            test=True,
+            dataset_infos=SimpleNamespace(is_molecular=True, is_tls=False),
+        )
+        ratios = SamplingMetrics.compute_ratios_to_ref(
+            harness,
+            reference_metrics={"val_sampling/fcd score": 1.0},
+            generated_metrics={},
         )
         self.assertIsNone(ratios["test_ratio/fcd score"])
         self.assertIsNone(ratios["test_ratio/average"])

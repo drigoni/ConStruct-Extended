@@ -7,6 +7,10 @@ general:
   check_val_every_n_epochs: 10
   sample_every_val: 1
   samples_to_generate: 1024
+  samples_to_save: 0
+  chains_to_save: 0
+  final_model_samples_to_save: 0
+  final_model_chains_to_save: 0
 
 model:
   transition: absorbing_edges

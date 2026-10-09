@@ -2,9 +2,11 @@ import json
 import math
 import os
 import pickle
+import tempfile
 import time
 import logging
 from datetime import datetime
+from pathlib import Path
 
 import networkx as nx
 import numpy as np
@@ -374,7 +376,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         atom_decoder = getattr(self.dataset_infos, "atom_decoder", None)
         if projector == "ring_count_at_most":
             return RingCountAtMostProjector(
-                z_t, getattr(self.cfg.model, "max_rings", 0), atom_decoder
+                z_t, int(constraints[0].value), atom_decoder
             )
         if projector == "ring_count_at_least":
             return RingCountAtLeastProjector(
@@ -382,7 +384,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             )
         if projector == "ring_length_at_most":
             return RingLengthAtMostProjector(
-                z_t, getattr(self.cfg.model, "max_ring_length", 6), atom_decoder
+                z_t, int(constraints[0].value), atom_decoder
             )
         if projector == "ring_length_at_least":
             return RingLengthAtLeastProjector(
@@ -778,6 +780,9 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{timestamp}] Sampling start on GR{self.global_rank}")
         start = time.time()
+        strict_generation = bool(
+            getattr(self.cfg.general, "strict_generation", False)
+        )
 
         if sampling_only:
             rank = int(self.global_rank)
@@ -790,6 +795,37 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         os.makedirs(output_dir, exist_ok=True)
 
         requested_samples = int(self.cfg.general.final_model_samples_to_generate)
+        self._final_suite_telemetry = None
+        if strict_generation:
+            if not sampling_only:
+                raise ValueError("strict_generation requires sampling_only=true")
+            if world_size != 1:
+                raise ValueError(
+                    "Strict suite generation requires exactly one visible device per process"
+                )
+            from ConStruct.analysis.final_suite_telemetry import FinalSuiteTelemetry
+
+            reverse_operation = (
+                "insertion"
+                if str(self.cfg.model.transition) == "absorbing_edges"
+                else "deletion"
+            )
+            self._final_suite_telemetry = FinalSuiteTelemetry(
+                output_dir=output_dir,
+                requested_samples=requested_samples,
+                cohort_size=int(getattr(self.cfg.general, "trajectory_samples", 256)),
+                seed=int(
+                    getattr(
+                        self.cfg.general,
+                        "telemetry_seed",
+                        int(self.cfg.train.seed) + 104729,
+                    )
+                ),
+                reverse_operation=reverse_operation,
+                diffusion_steps=self.T,
+                max_nodes=9,
+                collapse_charges=self.collapse_charges,
+            )
         samples_per_rank = math.ceil(requested_samples / max(world_size, 1))
         self.print(
             f"Samples to generate: {samples_per_rank} for each of the {world_size} devices"
@@ -803,8 +839,14 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         )
 
         pickle_path = os.path.join(output_dir, f"generated_samples_rank{rank}.pkl")
-        with open(pickle_path, "wb") as handle:
+        with tempfile.NamedTemporaryFile(dir=output_dir, delete=False) as handle:
             pickle.dump(samples, handle)
+            temporary_pickle = handle.name
+        os.replace(temporary_pickle, pickle_path)
+
+        telemetry_summary = None
+        if self._final_suite_telemetry is not None:
+            telemetry_summary = self._final_suite_telemetry.finish()
 
         if not sampling_only:
             self._write_samples_text(
@@ -813,6 +855,22 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             )
 
         self._trainer.strategy.barrier()
+        if strict_generation:
+            elapsed = time.time() - start
+            if self.global_rank == 0:
+                from ConStruct.analysis.final_suite_telemetry import atomic_json
+
+                atomic_json(
+                    Path(output_dir) / "strict_generation_complete.json",
+                    {
+                        "requested_samples": requested_samples,
+                        "generated_samples": sum(int(batch.X.shape[0]) for batch in samples),
+                        "sampling_seconds": elapsed,
+                        **(telemetry_summary or {}),
+                    },
+                )
+            print(f"Strict generation artifacts saved to {output_dir}")
+            return
         print("Computing final sampling metrics...")
 
         all_samples = []
@@ -1034,6 +1092,7 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         keep_chain: int = 0,
         save_final: int = 0,
         test=True,
+        global_offset: int = 0,
     ):
         # Start timing for this batch
         batch_start_time = time.time()
@@ -1089,6 +1148,9 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         )
 
         z_t = z_T
+        telemetry = getattr(self, "_final_suite_telemetry", None)
+        if telemetry is not None:
+            telemetry.begin_batch(z_t, global_offset)
 
         # Create a constraint-preserving object only when projection is enabled.
         rev_projector = self._build_reverse_projector(z_t)
@@ -1121,6 +1183,11 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 )
             else:
                 z_s = self.sample_zs_from_zt(z_t, s_array)
+            raw_z_s = z_s.copy() if telemetry is not None else None
+            blocked_before, unique_before = (
+                telemetry.projector_snapshot(rev_projector)
+                if telemetry is not None else (0, 0)
+            )
             model_time = time.time() - model_start_time
             total_model_time += model_time
 
@@ -1357,6 +1424,17 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                     ring_length_distribution = {}
                     planar_graphs_current = 0
 
+            if telemetry is not None:
+                blocked_after, unique_after = telemetry.projector_snapshot(rev_projector)
+                telemetry.record_transition(
+                    z_before=z_t,
+                    z_raw=raw_z_s,
+                    z_after=z_s,
+                    timestep=s_int,
+                    blocked_attempts=blocked_after - blocked_before,
+                    newly_blocked_pairs=unique_after - unique_before,
+                )
+
 
             z_t = z_s
 
@@ -1411,22 +1489,23 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 local_rank=self.local_rank,
             )
 
-        # Visualize the final molecules
-        current_path = os.getcwd()
-        result_path = os.path.join(
-            current_path,
-            f"graphs/{self.name}/epoch{self.current_epoch}_b{batch_id}/",
-        )
-        self.visualizer.visualize(
-            path=result_path,
-            graphs=final_batch,
-            atom_decoder=(
-                self.dataset_infos.atom_decoder
-                if hasattr(self.dataset_infos, "atom_decoder")
-                else None
-            ),
-            num_graphs_to_visualize=save_final,
-        )
+        # Visualize the final molecules only when requested.
+        if save_final > 0:
+            current_path = os.getcwd()
+            result_path = os.path.join(
+                current_path,
+                f"graphs/{self.name}/epoch{self.current_epoch}_b{batch_id}/",
+            )
+            self.visualizer.visualize(
+                path=result_path,
+                graphs=final_batch,
+                atom_decoder=(
+                    self.dataset_infos.atom_decoder
+                    if hasattr(self.dataset_infos, "atom_decoder")
+                    else None
+                ),
+                num_graphs_to_visualize=save_final,
+            )
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.print(f"[{timestamp}] Done.")
 
@@ -1450,6 +1529,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         elif not test and hasattr(self, 'val_sampling_metrics'):
             self.val_sampling_metrics.record_sampling_time(batch_time)
             # Projection timing is now recorded during each projection step
+        if telemetry is not None:
+            telemetry.end_batch()
 
         return final_batch
 
@@ -1475,6 +1556,8 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
         chains_left_to_save = chains_to_save
 
         samples = []
+        global_offset = 0
+        batch_cap = int(getattr(self.cfg.general, "final_generation_batch_size", 0) or 0)
         # The first graphs are sampled without sorting the sizes, so that the visualizations are not biased
         first_sampling = min(samples_to_generate, max(samples_to_save, chains_to_save))
         if first_sampling > 0:
@@ -1538,6 +1621,30 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
             # The remaining graphs are sampled in decreasing graph size
             n_nodes = torch.sort(n_nodes, descending=True)[0]
 
+        configured_batches = getattr(
+            self.cfg.general, "final_generation_batch_sizes", None
+        )
+        if configured_batches:
+            batch_sizes = [int(value) for value in configured_batches]
+            if sum(batch_sizes) != len(n_nodes):
+                raise ValueError(
+                    "final_generation_batch_sizes must sum to the requested samples"
+                )
+            cursor = 0
+            for batch_id, batch_size in enumerate(batch_sizes):
+                next_cursor = cursor + batch_size
+                samples.append(
+                    self.sample_batch(
+                        n_nodes=n_nodes[cursor:next_cursor],
+                        batch_id=batch_id,
+                        test=test,
+                        global_offset=global_offset,
+                    )
+                )
+                global_offset += batch_size
+                cursor = next_cursor
+            return samples
+
         max_size = 0
         current_n_list = []
         for i, n in enumerate(n_nodes):
@@ -1549,12 +1656,28 @@ class DiscreteDenoisingDiffusion(pl.LightningModule):
                 if self.cfg.dataset.adaptive_loader
                 else 1.8 * self.cfg.train.batch_size
             )
+            if batch_cap > 0:
+                potential_ebs = min(int(potential_ebs), batch_cap)
             if potential_ebs > len(current_n_list) or len(current_n_list) == 0:
                 current_n_list.append(n)
             else:
-                samples.append(self.sample_batch(n_nodes=current_n_list, test=test))
+                samples.append(
+                    self.sample_batch(
+                        n_nodes=current_n_list,
+                        test=test,
+                        global_offset=global_offset,
+                    )
+                )
+                global_offset += len(current_n_list)
                 current_n_list = [n]
                 max_size = n
-        samples.append(self.sample_batch(n_nodes=current_n_list, test=test))
+        if current_n_list:
+            samples.append(
+                self.sample_batch(
+                    n_nodes=current_n_list,
+                    test=test,
+                    global_offset=global_offset,
+                )
+            )
 
         return samples
